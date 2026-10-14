@@ -18,6 +18,8 @@ class CalendarPreferenceStore(context: Context) {
             prefs.getStringSet(key + "hidden", emptySet()),
             prefs.getString(key + "default", null),
             prefs.getString(key + "recent", ""),
+            prefs.getString(key + "colors", ""),
+            prefs.getString(key + "view", null),
         )
     }
     fun save(server: String, value: CalendarPreferences) {
@@ -26,6 +28,8 @@ class CalendarPreferenceStore(context: Context) {
         prefs.edit().putStringSet(key + "favorites", value.favorites.toSet())
             .putStringSet(key + "hidden", value.hidden.toSet())
             .putString(key + "default", value.defaultId)
-            .putString(key + "recent", value.recentString()).apply()
+            .putString(key + "recent", value.recentString())
+            .putString(key + "colors", value.colorString())
+            .putString(key + "view", value.view.name).apply()
     }
 }

@@ -7,6 +7,7 @@ import com.tinkercobble.ham.auth.Session
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -23,6 +24,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 class HomeAssistantClient(context: Context) {
+    data class EventRead(val events: List<AgendaEvent>, val succeeded: Set<String>, val failed: Map<String, String>)
     private val store = SecureSession(context)
     private var session: Session? = store.load()
     val connected get() = session != null
@@ -69,13 +71,20 @@ class HomeAssistantClient(context: Context) {
         val array = JSONArray(request("/api/calendars"))
         val states = JSONArray(request("/api/states"))
         val features = mutableMapOf<String, Int>()
+        val colors = mutableMapOf<String, String>()
         for (i in 0 until states.length()) {
             val item = states.getJSONObject(i)
             val id = item.optString("entity_id")
-            if (id.startsWith("calendar.")) features[id] = item.optJSONObject("attributes")?.optInt("supported_features") ?: 0
+            if (id.startsWith("calendar.")) {
+                val attrs = item.optJSONObject("attributes")
+                features[id] = attrs?.optInt("supported_features") ?: 0
+                attrs?.optString("color")?.takeIf { Regex("#[0-9A-Fa-f]{6}").matches(it) }?.let { colors[id] = it }
+            }
         }
         return (0 until array.length()).map { array.getJSONObject(it) }
-            .map { CalendarSource(it.getString("entity_id"), it.optString("name", it.getString("entity_id")), features[it.getString("entity_id")] ?: 0, it.optString("source").ifBlank { "Not provided by Home Assistant" }) }
+            .map { CalendarSource(it.getString("entity_id"), it.optString("name", it.getString("entity_id")), features[it.getString("entity_id")] ?: 0,
+                it.optString("source").ifBlank { "Not provided by Home Assistant" },
+                it.optString("color").takeIf { color -> Regex("#[0-9A-Fa-f]{6}").matches(color) } ?: colors[it.getString("entity_id")]) }
             .sortedBy { it.name.lowercase() }
     }
 
@@ -102,15 +111,27 @@ class HomeAssistantClient(context: Context) {
     }
 
     suspend fun events(sources: List<CalendarSource>, from: LocalDate, until: LocalDate): List<AgendaEvent> {
+        return distinctEvents(sources.flatMap { eventsFor(it, from, until) })
+    }
+
+    suspend fun readEvents(sources: List<CalendarSource>, from: LocalDate, until: LocalDate): EventRead {
+        val results = mutableListOf<AgendaEvent>()
+        val succeeded = mutableSetOf<String>()
+        val failed = mutableMapOf<String, String>()
+        for (source in sources) {
+            try { results += eventsFor(source, from, until); succeeded += source.id }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { failed[source.id] = e.message ?: "Request failed" }
+        }
+        return EventRead(distinctEvents(results), succeeded, failed)
+    }
+
+    private suspend fun eventsFor(source: CalendarSource, from: LocalDate, until: LocalDate): List<AgendaEvent> {
         val zone = ZoneId.systemDefault()
         val start = java.net.URLEncoder.encode(from.atStartOfDay(zone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "UTF-8")
         val end = java.net.URLEncoder.encode(until.atStartOfDay(zone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "UTF-8")
-        val results = mutableListOf<AgendaEvent>()
-        for (source in sources) {
-            val array = JSONArray(request("/api/calendars/${source.id}?start=$start&end=$end"))
-            for (i in 0 until array.length()) results += AgendaEvent.fromJson(source, array.getJSONObject(i))
-        }
-        return distinctEvents(results)
+        val array = JSONArray(request("/api/calendars/${source.id}?start=$start&end=$end"))
+        return (0 until array.length()).map { AgendaEvent.fromJson(source, array.getJSONObject(it)) }
     }
 
     suspend fun createAllDay(source: CalendarSource, date: LocalDate, summary: String, known: List<AgendaEvent>) {

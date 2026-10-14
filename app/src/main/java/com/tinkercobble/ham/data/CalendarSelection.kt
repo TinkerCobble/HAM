@@ -6,13 +6,26 @@ data class CalendarPreferences(
     val hidden: Set<String> = emptySet(),
     val defaultId: String? = null,
     val recent: List<String> = emptyList(),
+    val colors: Map<String, String> = emptyMap(),
+    val view: CalendarView = CalendarView.WEEK,
 ) {
     fun used(id: String) = copy(recent = (listOf(id) + recent.filterNot { it == id }).take(8))
     fun recentString() = recent.joinToString("\n")
+    fun colorString() = colors.entries.sortedBy { it.key }.joinToString("\n") { "${it.key}\t${it.value}" }
+    fun showAll(available: List<CalendarSource>) = copy(hidden = hidden - available.map { it.id }.toSet())
+    fun hideAll(available: List<CalendarSource>) = copy(hidden = hidden + available.map { it.id })
+    fun setColor(id: String, color: String?) = copy(colors = if (color == null) colors - id
+        else colors + (id to color))
     companion object {
-        fun fromStored(favorites: Set<String>?, hidden: Set<String>?, defaultId: String?, recent: String?) =
+        fun fromStored(favorites: Set<String>?, hidden: Set<String>?, defaultId: String?, recent: String?,
+                       colorText: String? = null, viewText: String? = null) =
             CalendarPreferences(favorites?.toSet() ?: emptySet(), hidden?.toSet() ?: emptySet(),
-                defaultId, recent.orEmpty().split('\n').filter { it.isNotBlank() }.distinct().take(8))
+                defaultId, recent.orEmpty().split('\n').filter { it.isNotBlank() }.distinct().take(8),
+                colorText.orEmpty().split('\n').mapNotNull { line ->
+                    val parts = line.split('\t', limit = 2)
+                    if (parts.size == 2 && parts[0].startsWith("calendar.") &&
+                        Regex("#[0-9A-Fa-f]{6}").matches(parts[1])) parts[0] to parts[1] else null
+                }.toMap(), CalendarView.entries.find { it.name == viewText } ?: CalendarView.WEEK)
     }
 }
 

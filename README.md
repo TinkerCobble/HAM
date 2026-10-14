@@ -2,7 +2,7 @@
 
 HAM is a native Android app for an existing [Home Assistant](https://www.home-assistant.io/) installation. It reads calendars and open to-do items, and can create events or edit event titles when the selected calendar reports support. Home Assistant and its configured providers remain the source of truth; HAM does not host calendar data.
 
-This repository begins with the complete source snapshot for the **experimental HAM DEV 0.1.8-dev (versionCode 9)** build tested on a Samsung Note8 and distributed from [TinkerCobble's HAM page](https://tinkercobble.com/ham/). It has fresh public Git history; private development history was not copied here. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored in this repository.
+This repository contains the complete source for the **experimental HAM DEV 0.1.9-dev (versionCode 10)** build tested on a Samsung Note8 and distributed from [TinkerCobble's HAM page](https://tinkercobble.com/ham/). Its public Git history begins with an audited source snapshot; private development history was not copied here. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored in this repository.
 
 ## Build
 
@@ -21,7 +21,7 @@ The `stableDirect`, `stablePlay`, and `stableFdroid` flavors share this source t
 
 In HAM DEV, open Settings, enter the address of a Home Assistant installation you control, then sign in on Home Assistant's authorization screen. HAM uses `https://tinkercobble.com/ham/` as its OAuth application identity. The authorization callback stays in the app. The public page does not receive your authorization code or calendar contents. Tokens are stored in Android private encrypted storage; loaded calendar and task information is held in memory.
 
-Calendar choices are keyed by the exact Home Assistant entity ID, including when names are identical. A calendar must report write support before HAM offers creation. There is no automatically selected first writable calendar; a user can choose an explicit default. Tasks are read-only in this source snapshot.
+Calendar choices are keyed by the exact Home Assistant entity ID, including when names are identical. A calendar must report write support before HAM offers creation. There is no automatically selected first writable calendar; a user can choose an explicit default. Month, next seven days, and three-day views are available. Visibility, favorites, and color choices are saved locally. Tasks are read-only in this source snapshot.
 
 ## Status and distribution
 

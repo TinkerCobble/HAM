@@ -9,6 +9,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +30,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -41,6 +48,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,10 +58,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -65,6 +82,9 @@ import com.tinkercobble.ham.auth.ConnectionPolicy
 import com.tinkercobble.ham.data.AgendaEvent
 import com.tinkercobble.ham.data.CalendarSource
 import com.tinkercobble.ham.data.CalendarSelection
+import com.tinkercobble.ham.data.CalendarView
+import com.tinkercobble.ham.data.CalendarDisplay
+import com.tinkercobble.ham.data.DateRange
 import com.tinkercobble.ham.ui.HamViewModel
 import com.tinkercobble.ham.ui.HamTheme
 import com.tinkercobble.ham.updates.AvailableUpdate
@@ -73,7 +93,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.time.LocalDate
-import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -84,20 +103,27 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val pages = listOf("Today", "Calendar", "Quick Add", "Tasks", "Search", "Settings")
+private val pages = listOf("Today", "Calendar", "Quick Add", "Tasks", "Search", "Settings", "About")
 private val dayFormat = DateTimeFormatter.ofPattern("EEE, MMM d")
-private val eventTimeFormat = DateTimeFormatter.ofPattern("MMM d, h:mm a")
 
-private fun displayEventTime(value: String): String =
-    runCatching { OffsetDateTime.parse(value).format(eventTimeFormat) }.getOrDefault(value)
-
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun HamApp(model: HamViewModel = viewModel()) {
     val context = LocalContext.current
     val activity = context as ComponentActivity
     val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf(if (model.connected.value) "Today" else "Settings") }
+    var returnPage by remember { mutableStateOf("Today") }
+    var manageId by remember { mutableStateOf<String?>(null) }
+    val calendarScroll = rememberLazyListState()
+    fun navigate(destination: String) {
+        when (destination) {
+            "Today" -> model.enterToday()
+            "Calendar" -> if (page != "Calendar" && page != "Calendars") model.enterCalendar()
+        }
+        page = destination
+    }
+    fun openCalendars(id: String? = null) { returnPage = page; manageId = id; page = "Calendars" }
     var availableUpdate by remember { mutableStateOf<AvailableUpdate?>(null) }
     var showUpdatePrompt by remember { mutableStateOf(false) }
     var downloadingUpdate by remember { mutableStateOf(false) }
@@ -133,6 +159,18 @@ private fun HamApp(model: HamViewModel = viewModel()) {
     }
     LaunchedEffect(Unit) {
         activity.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            model.updateActualToday()
+            while (true) {
+                val now = java.time.ZonedDateTime.now()
+                val until = java.time.Duration.between(now, now.toLocalDate().plusDays(1).atStartOfDay(now.zone))
+                    .toMillis().coerceAtLeast(1000)
+                delay(until)
+                model.updateActualToday()
+            }
+        }
+    }
+    LaunchedEffect(Unit) {
+        activity.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             delay(1_500)
             while (true) {
                 if (UpdateService.shouldAutoCheck(context)) {
@@ -147,11 +185,30 @@ private fun HamApp(model: HamViewModel = viewModel()) {
     Scaffold(topBar = {
         TopAppBar(title = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = null, modifier = Modifier.size(38.dp))
-                Column {
-                    Text("HAM", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text(if (BuildConfig.FLAVOR == "dev") "$page · DEV" else page,
-                        style = MaterialTheme.typography.labelSmall)
+                Box(Modifier.size(48.dp).clickable(onClickLabel = "Go to today") { navigate("Today") },
+                    contentAlignment = Alignment.Center) {
+                    Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = "Go to today", modifier = Modifier.size(38.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("Home Agenda Manager", style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(model.actualToday.value.format(DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy")),
+                        style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
+                val iconColor = MaterialTheme.colorScheme.onSurface
+                Box(Modifier.size(48.dp).semantics { contentDescription = "Search events" }
+                    .combinedClickable(onClick = { page = "Search" },
+                        onLongClick = { android.widget.Toast.makeText(context, "Search events", android.widget.Toast.LENGTH_SHORT).show() }),
+                    contentAlignment = Alignment.Center) {
+                    androidx.compose.foundation.Canvas(Modifier.size(24.dp)) {
+                        drawCircle(iconColor, radius = size.minDimension * 0.28f,
+                            center = androidx.compose.ui.geometry.Offset(size.width * 0.42f, size.height * 0.4f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()))
+                        drawLine(iconColor,
+                            androidx.compose.ui.geometry.Offset(size.width * 0.62f, size.height * 0.62f),
+                            androidx.compose.ui.geometry.Offset(size.width * 0.9f, size.height * 0.9f),
+                            strokeWidth = 2.dp.toPx())
+                    }
                 }
             }
         })
@@ -163,7 +220,7 @@ private fun HamApp(model: HamViewModel = viewModel()) {
                     Surface(tonalElevation = 2.dp) {
                         Column(Modifier.widthIn(min = 156.dp).padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             pages.forEach { destination ->
-                                NavigationChoice(destination, page == destination, { page = destination }, Modifier.fillMaxWidth())
+                                NavigationChoice(destination, page == destination, { navigate(destination) }, Modifier.fillMaxWidth())
                             }
                         }
                     }
@@ -180,13 +237,15 @@ private fun HamApp(model: HamViewModel = viewModel()) {
                                 Text("Connect to Home Assistant to see your calendar.")
                                 TextButton(onClick = { page = "Settings" }) { Text("Open Settings") }
                             } else when (page) {
-                                "Today" -> TodayPage(model)
-                                "Calendar" -> CalendarPage(model)
+                                "Today" -> TodayPage(model, ::openCalendars)
+                                "Calendar" -> CalendarPage(model, calendarScroll, ::openCalendars)
                                 "Quick Add" -> QuickAddPage(model)
                                 "Tasks" -> TasksPage(model)
-                                "Search" -> SearchPage(model)
+                                "Search" -> SearchPage(model, ::openCalendars)
+                                "Calendars" -> ManageCalendarsPage(model, { page = returnPage }, manageId)
+                                "About" -> AboutPage()
                                 "More" -> MorePage { page = it }
-                                else -> SettingsPage(model, onConnected = { page = "Today" }, onUpdateAvailable = {
+                                else -> SettingsPage(model, onConnected = { navigate("Today") }, onUpdateAvailable = {
                                     availableUpdate = it
                                     showUpdatePrompt = true
                                 })
@@ -198,8 +257,8 @@ private fun HamApp(model: HamViewModel = viewModel()) {
                             horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             destinations.forEach { destination ->
                                 NavigationChoice(destination, page == destination ||
-                                    (destination == "More" && page in listOf("Tasks", "Search", "Settings")),
-                                    { page = destination }, Modifier.weight(1f))
+                                    (destination == "More" && page in listOf("Tasks", "Search", "Settings", "About", "Calendars")),
+                                    { navigate(destination) }, Modifier.weight(1f))
                             }
                         }
                     }
@@ -257,7 +316,8 @@ private fun NavigationChoice(label: String, selected: Boolean, onClick: () -> Un
 private fun MorePage(open: (String) -> Unit) {
     Text("More", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
     Spacer(Modifier.height(12.dp))
-    listOf("Tasks" to "Open items from Home Assistant", "Search" to "Find an event", "Settings" to "Connection, calendars, and updates")
+    listOf("Tasks" to "Open items from Home Assistant", "Search" to "Find an event",
+        "Settings" to "Connection, calendars, and updates", "About" to "Version and app information")
         .forEach { (name, detail) ->
             Card(onClick = { open(name) }, modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -269,66 +329,256 @@ private fun MorePage(open: (String) -> Unit) {
 }
 
 @Composable
+private fun AboutPage() {
+    Text("About", style = MaterialTheme.typography.headlineMedium)
+    Text("${if (BuildConfig.FLAVOR == "dev") "Experimental DEV" else "Stable"} · ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})")
+    Text("Package: ${BuildConfig.APPLICATION_ID}", style = MaterialTheme.typography.bodySmall)
+    Text("Home Agenda Manager connects to your Home Assistant.")
+}
+
+@Composable
 private fun DayPicker(model: HamViewModel) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-        OutlinedButton(onClick = { model.move(-1) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { Text("‹") }
-        Text(model.selectedDate.value.format(dayFormat), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-        OutlinedButton(onClick = { model.move(1) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { Text("›") }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(onClick = { model.move(-1) }, modifier = Modifier.size(48.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text("‹") }
+        Text(model.selectedDate.value.format(dayFormat), style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+        OutlinedButton(onClick = { model.move(1) }, modifier = Modifier.size(48.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text("›") }
     }
-    if (model.selectedDate.value != LocalDate.now())
+    if (model.selectedDate.value != model.actualToday.value)
         TextButton(onClick = { model.today() }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Go to today") }
 }
 
 @Composable
-private fun TodayPage(model: HamViewModel) {
-    Text("Your day", style = MaterialTheme.typography.headlineMedium)
+private fun TodayPage(model: HamViewModel, openCalendars: (String?) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(CalendarDisplay.titleForDay(model.selectedDate.value, model.actualToday.value),
+            style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+        TextButton(onClick = { openCalendars(null) }) { Text("Calendars") }
+    }
     DayPicker(model)
-    val items = model.visibleEvents.filter { it.occursOn(model.selectedDate.value) }
-    if (items.isEmpty()) Text("No calendar events for this day.", Modifier.padding(top = 20.dp))
-    EventList(items, model)
+    RefreshStatus(model)
+    AgendaContent(model, listOf(model.selectedDate.value), openCalendars, Modifier.fillMaxSize(), false)
 }
 
 @Composable
-private fun CalendarPage(model: HamViewModel) {
-    Text("Calendar", style = MaterialTheme.typography.headlineMedium)
-    DayPicker(model)
-    val weekStart = model.selectedDate.value.minusDays(model.selectedDate.value.dayOfWeek.value.toLong() - 1)
-    Text("Week of ${weekStart.format(dayFormat)}", Modifier.padding(vertical = 12.dp))
-    val items = model.visibleEvents.filter { (0..6).any { offset -> it.occursOn(weekStart.plusDays(offset.toLong())) } }
-    if (items.isEmpty()) Text("No events this week.")
-    EventList(items, model)
+private fun CalendarPage(model: HamViewModel, scroll: androidx.compose.foundation.lazy.LazyListState,
+    openCalendars: (String?) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("Calendar", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f), maxLines = 1)
+        ModeButton("▦", "Month view", model.calendarView.value == CalendarView.MONTH) { model.setView(CalendarView.MONTH) }
+        ModeButton("▤", "Next 7 days", model.calendarView.value == CalendarView.WEEK) { model.setView(CalendarView.WEEK) }
+        ModeButton("Ⅲ", "3 days", model.calendarView.value == CalendarView.THREE_DAYS) { model.setView(CalendarView.THREE_DAYS) }
+    }
+    val range = model.calendarRange()
+    LaunchedEffect(range.start, model.calendarView.value) { scroll.scrollToItem(0) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(onClick = { model.moveCalendar(-1) }, modifier = Modifier.size(48.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text("‹") }
+        Text(if (model.calendarView.value == CalendarView.MONTH) range.start.format(DateTimeFormatter.ofPattern("MMMM yyyy"))
+            else "${model.calendarView.value.label}: ${range.start.format(dayFormat)} – ${range.endExclusive.minusDays(1).format(dayFormat)}",
+            style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+        OutlinedButton(onClick = { model.moveCalendar(1) }, modifier = Modifier.size(48.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text("›") }
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = { openCalendars(null) }) { Text("Calendars") }
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = { model.enterCalendar() }) { Text("Today") }
+    }
+    RefreshStatus(model)
+    AgendaContent(model, range.days, openCalendars, Modifier.fillMaxSize(), model.calendarView.value == CalendarView.MONTH,
+        scroll)
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ModeButton(icon: String, label: String, selected: Boolean, onClick: () -> Unit) {
+    val context = LocalContext.current
+    Surface(modifier = Modifier.size(48.dp).semantics { contentDescription = label }
+        .combinedClickable(onClick = onClick,
+            onLongClick = { android.widget.Toast.makeText(context, label, android.widget.Toast.LENGTH_SHORT).show() }),
+        shape = MaterialTheme.shapes.medium,
+        color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface) {
+        Box(contentAlignment = Alignment.Center) { Text(icon, style = MaterialTheme.typography.titleLarge) }
+    }
 }
 
 @Composable
-private fun EventList(events: List<AgendaEvent>, model: HamViewModel) {
+private fun RefreshStatus(model: HamViewModel) {
+    if (model.failedCalendars.value.isNotEmpty()) {
+        Text("Could not refresh: ${model.failedCalendars.value.keys.joinToString { id -> model.calendars.value.find { it.id == id }?.name ?: id }}",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        TextButton(onClick = model::refresh) { Text("Retry") }
+    } else if (model.lastSync.value != null) {
+        val formatter = DateTimeFormatter.ofPattern("MMM d, h:mm a").withZone(ZoneId.systemDefault())
+        Text("Updated ${formatter.format(model.lastSync.value)}", style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AgendaContent(model: HamViewModel, days: List<LocalDate>, openCalendars: (String?) -> Unit,
+    modifier: Modifier, month: Boolean, scroll: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState()) {
     var selected by remember { mutableStateOf<AgendaEvent?>(null) }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(events, key = { it.identity }) { event ->
-            Card(Modifier.fillMaxWidth().clickable { selected = event }) {
-                Column(Modifier.padding(14.dp)) {
-                    Text(event.summary, fontWeight = FontWeight.SemiBold)
-                    Text("${event.date.format(dayFormat)} · ${event.calendarName}", style = MaterialTheme.typography.bodySmall)
-                    if (!event.allDay) Text(event.start.substringAfter('T').take(5), style = MaterialTheme.typography.bodySmall)
+    var horizontalDrag by remember { mutableStateOf(0f) }
+    val density = LocalDensity.current
+    val threshold = with(density) { 64.dp.toPx() }
+    val slide = remember { Animatable(0f) }
+    val context = LocalContext.current
+    val displayKey = "${model.activeAgenda.value}-${model.calendarView.value}-${days.firstOrNull()}"
+    LaunchedEffect(displayKey) {
+        val scale = android.provider.Settings.Global.getFloat(context.contentResolver,
+            android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+        val direction = model.navigationDirection.intValue
+        if (direction != 0 && scale > 0f) {
+            slide.snapTo(with(density) { 28.dp.toPx() } * direction)
+            slide.animateTo(0f, tween((160 * scale).toInt().coerceAtLeast(1)))
+        } else slide.snapTo(0f)
+    }
+    val body = modifier.pointerInput(month, model.calendarView.value, model.activeAgenda.value) {
+        detectHorizontalDragGestures(onHorizontalDrag = { _, delta -> horizontalDrag += delta },
+            onDragEnd = {
+                if (kotlin.math.abs(horizontalDrag) >= threshold) {
+                    if (model.activeAgenda.value == "Calendar") model.moveCalendar(if (horizontalDrag < 0) 1 else -1)
+                    else model.move(if (horizontalDrag < 0) 1 else -1)
                 }
+                horizontalDrag = 0f
+            }, onDragCancel = { horizontalDrag = 0f })
+    }
+    PullToRefreshBox(isRefreshing = model.loading.value, onRefresh = model::refresh, modifier = body) {
+        LazyColumn(state = scroll, verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxSize().graphicsLayer { translationX = slide.value }) {
+            if (month) item(key = "month-grid") { MonthGrid(model) }
+            val displayed = if (month) listOf(model.monthSelectedDate.value) else days
+            displayed.forEach { day ->
+                item(key = "heading-$day") {
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha =
+                        if (day.dayOfYear % 2 == 0) 0.58f else 0.32f),
+                        shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                        Text(if (month) "${CalendarDisplay.titleForDay(day, model.actualToday.value)} · ${day.format(dayFormat)}"
+                            else day.format(DateTimeFormatter.ofPattern("EEEE, MMM d")),
+                            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(12.dp))
+                    }
+                }
+                val events = CalendarDisplay.onDay(model.visibleEvents, day)
+                if (events.isEmpty()) item(key = "empty-$day") {
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+                        Text("No events", Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                events.forEach { event -> item(key = "${day}-${event.identity}") { EventCard(event, model) { selected = event } } }
             }
         }
     }
-    selected?.let { event -> EventDetails(event, model.calendars.value.find { it.id == event.calendarId }, model) { selected = null } }
+    selected?.let { event -> EventDetails(event, model.calendars.value.find { it.id == event.calendarId }, model,
+        close = { selected = null }, manage = { id -> selected = null; openCalendars(id) }) }
 }
 
 @Composable
-private fun EventDetails(event: AgendaEvent, source: CalendarSource?, model: HamViewModel, close: () -> Unit) {
+private fun MonthGrid(model: HamViewModel) {
+    val range = model.calendarRange()
+    val first = range.start
+    val offset = first.dayOfWeek.value - 1
+    val cellCount = ((offset + range.days.size + 6) / 7) * 7
+    val cells = (0 until cellCount).map { first.plusDays((it - offset).toLong()) }
+    val days = listOf("M", "T", "W", "T", "F", "S", "S")
+    Column {
+        Row(Modifier.fillMaxWidth()) { days.forEach { Text(it, Modifier.weight(1f), textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.labelSmall) } }
+        cells.chunked(7).forEach { week ->
+            Row(Modifier.fillMaxWidth()) { week.forEach { day ->
+                val inMonth = range.contains(day)
+                val selected = day == model.monthSelectedDate.value
+                val today = day == model.actualToday.value
+                val events = if (inMonth) CalendarDisplay.onDay(model.visibleEvents, day) else emptyList()
+                Surface(onClick = { if (inMonth) model.selectMonthDay(day) }, enabled = inMonth,
+                    modifier = Modifier.weight(1f).heightIn(min = 58.dp).padding(1.dp)
+                        .semantics { contentDescription = "${day.format(dayFormat)}, ${events.size} events" },
+                    shape = MaterialTheme.shapes.small,
+                    color = if (selected) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (inMonth) 0.42f else 0.15f)) {
+                    Column(Modifier.padding(2.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(day.dayOfMonth.toString(), fontWeight = if (today) FontWeight.ExtraBold else FontWeight.Normal,
+                            color = if (today) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.labelMedium)
+                        Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                            events.take(3).forEach { event ->
+                                Surface(color = eventColor(event, model), shape = MaterialTheme.shapes.small,
+                                    modifier = Modifier.size(5.dp)) {}
+                            }
+                        }
+                        if (events.size > 3) Text("+${events.size - 3}", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            } }
+        }
+    }
+}
+
+@Composable
+private fun eventColor(event: AgendaEvent, model: HamViewModel): Color {
+    val source = model.calendars.value.find { it.id == event.calendarId }
+    val color = model.calendarPreferences.value.colors[event.calendarId] ?: source?.haColor
+    return color?.let { runCatching { Color(android.graphics.Color.parseColor(it)) }.getOrNull() }
+        ?: MaterialTheme.colorScheme.primary
+}
+
+@Composable
+private fun EventCard(event: AgendaEvent, model: HamViewModel, open: () -> Unit) {
+    val stripe = eventColor(event, model)
+    Card(Modifier.fillMaxWidth().clickable(onClick = open)) {
+        Row(Modifier.fillMaxWidth()) {
+            Surface(color = stripe, modifier = Modifier.size(width = 5.dp, height = 76.dp)) {}
+            Column(Modifier.padding(12.dp)) {
+                Text(event.summary, fontWeight = FontWeight.SemiBold)
+                Text(event.calendarName, style = MaterialTheme.typography.bodySmall)
+                if (event.calendarId in model.calendarPreferences.value.hidden)
+                    Text("Hidden calendar", style = MaterialTheme.typography.labelSmall)
+                Text(if (event.allDay) "All day" else "${CalendarDisplay.time(event.start)} – ${CalendarDisplay.time(event.end)}",
+                    style = MaterialTheme.typography.bodySmall)
+                if (event.location.isNotBlank() && event.location != "null") Text(event.location,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EventList(events: List<AgendaEvent>, model: HamViewModel, openCalendars: (String?) -> Unit) {
+    var selected by remember { mutableStateOf<AgendaEvent?>(null) }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(events, key = { it.identity }) { event -> EventCard(event, model) { selected = event } }
+    }
+    selected?.let { event -> EventDetails(event, model.calendars.value.find { it.id == event.calendarId }, model,
+        close = { selected = null }, manage = { id -> selected = null; openCalendars(id) }) }
+}
+
+@Composable
+private fun EventDetails(event: AgendaEvent, source: CalendarSource?, model: HamViewModel,
+    close: () -> Unit, manage: (String) -> Unit) {
     var title by remember(event.identity) { mutableStateOf(event.summary) }
     val editable = source?.canUpdate == true && event.uid != null && event.recurrenceId == null
     AlertDialog(onDismissRequest = close, title = { Text("Event details") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             if (editable) OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") })
             else Text(event.summary, style = MaterialTheme.typography.titleMedium)
-            Text(event.calendarName)
+            Text("Calendar: ${event.calendarName}")
+            Text("Integration: ${source?.source ?: "Not provided by Home Assistant"}", style = MaterialTheme.typography.bodySmall)
+            SelectionContainer { Text("Entity ID: ${event.calendarId}", style = MaterialTheme.typography.bodySmall) }
             Text(if (event.allDay) "${event.date.format(dayFormat)} · All day"
-                else "${displayEventTime(event.start)} – ${displayEventTime(event.end)}")
+                else "${CalendarDisplay.dateTime(event.start)} – ${CalendarDisplay.dateTime(event.end)}")
             if (event.location.isNotBlank() && !event.location.equals("null", ignoreCase = true)) Text(event.location)
-            if (event.description.isNotBlank() && !event.description.equals("null", ignoreCase = true)) Text(event.description)
+            if (event.description.isNotBlank() && !event.description.equals("null", ignoreCase = true)) {
+                Text("Description and provenance notes", style = MaterialTheme.typography.labelMedium)
+                SelectionContainer { Text(event.description) }
+            }
+            TextButton(onClick = { manage(event.calendarId) }) { Text("Manage this calendar") }
             if (!editable) Text("This event can't be edited here.", style = MaterialTheme.typography.bodySmall)
         }
     }, confirmButton = {
@@ -442,14 +692,21 @@ private fun TasksPage(model: HamViewModel) {
 }
 
 @Composable
-private fun SearchPage(model: HamViewModel) {
+private fun SearchPage(model: HamViewModel, openCalendars: (String?) -> Unit) {
     var query by remember { mutableStateOf("") }
+    var includeHidden by remember { mutableStateOf(false) }
     Text("Search calendars", style = MaterialTheme.typography.headlineMedium)
     OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("Find events") }, modifier = Modifier.fillMaxWidth())
     Text("Search loaded events.", style = MaterialTheme.typography.bodySmall)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked = includeHidden, onCheckedChange = { includeHidden = it })
+        Text("Include hidden calendars")
+    }
     if (query.isBlank()) Text("Type a name or place to search.", Modifier.padding(top = 16.dp),
         color = MaterialTheme.colorScheme.onSurfaceVariant)
-    EventList(model.visibleEvents.filter { query.isNotBlank() && (it.summary.contains(query, true) || it.description.contains(query, true) || it.location.contains(query, true)) }, model)
+    EventList(model.events.value.filter { (includeHidden || it.calendarId !in model.calendarPreferences.value.hidden) &&
+        query.isNotBlank() && (it.summary.contains(query, true) || it.description.contains(query, true) || it.location.contains(query, true)) },
+        model, openCalendars)
 }
 
 @Composable
@@ -480,7 +737,7 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
         } else model.cancelAuth()
     }
     if (manageOpen) {
-        ManageCalendarsPage(model) { manageOpen = false }
+        ManageCalendarsPage(model, onBack = { manageOpen = false })
         return
     }
     if (privacyOpen) {
@@ -494,7 +751,7 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
         Button(onClick = model::refresh) { Text("Refresh") }
         OutlinedButton(onClick = { privacyOpen = true }) { Text("Privacy & Connection") }
         Text("${model.calendars.value.size} calendars available", Modifier.padding(top = 12.dp))
-        OutlinedButton(onClick = { manageOpen = true }) { Text("Manage Calendars") }
+        OutlinedButton(onClick = { manageOpen = true }) { Text("Calendars") }
         if (model.legacyIdentity) {
             Text("Reconnect to authorize HAM. Your current connection stays active until sign-in succeeds.")
             Button(onClick = { model.beginAuth(model.server.value) }, enabled = !model.loading.value) { Text("Reconnect HAM identity") }
@@ -541,38 +798,47 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
         }
     }, enabled = !checkingUpdate) { Text(if (checkingUpdate) "Checking…" else "Check for updates") }
     if (updateMessage.isNotBlank()) Text(updateMessage)
-    Text("${if (BuildConfig.FLAVOR == "dev") "HAM DEV" else "HAM"} · ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall)
     }
 }
 
 @Composable
-private fun ManageCalendarsPage(model: HamViewModel, onBack: () -> Unit) {
-    var query by remember { mutableStateOf("") }
+private fun ManageCalendarsPage(model: HamViewModel, onBack: () -> Unit, focusId: String? = null) {
+    var query by remember(focusId) { mutableStateOf(focusId.orEmpty()) }
+    var colorTarget by remember { mutableStateOf<CalendarSource?>(null) }
     val prefs = model.calendarPreferences.value
     Column(Modifier.fillMaxSize()) {
         TextButton(onClick = onBack) { Text("‹ Settings") }
-        Text("Manage Calendars", style = MaterialTheme.typography.headlineMedium)
-        Text("Favorites, hidden calendars, and your Quick Add default are stored on this device.",
+        Text("Calendars", style = MaterialTheme.typography.headlineMedium)
+        Text("Visibility, colors, favorites, and your Quick Add default are stored on this device.",
             style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(query, { query = it }, label = { Text("Search name, source, or entity ID") },
             modifier = Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = { model.setCalendarPreferences(prefs.showAll(model.calendars.value)) }) { Text("Show all") }
+            TextButton(onClick = { model.setCalendarPreferences(prefs.hideAll(model.calendars.value)) }) { Text("Hide all") }
+        }
         val matches = CalendarSelection.search(model.calendars.value, query)
         LazyColumn {
             items(matches, key = { it.id }) { source ->
                 Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                    Text(source.name, fontWeight = FontWeight.SemiBold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = source.id !in prefs.hidden, onCheckedChange = { visible ->
+                            model.setCalendarPreferences(prefs.copy(hidden = if (visible) prefs.hidden - source.id
+                                else prefs.hidden + source.id))
+                        })
+                        Text(source.name, fontWeight = FontWeight.SemiBold)
+                    }
                     Text("Source: ${source.source} · ${if (source.canCreate) "Writable" else "Read-only"}",
                         style = MaterialTheme.typography.bodySmall)
                     Text(source.id, style = MaterialTheme.typography.bodySmall)
+                    Text("Color: ${prefs.colors[source.id] ?: source.haColor ?: "No color supplied by Home Assistant"}",
+                        style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { colorTarget = source }) { Text("Color") }
                         TextButton(onClick = {
                             model.setCalendarPreferences(prefs.copy(favorites =
                                 if (source.id in prefs.favorites) prefs.favorites - source.id else prefs.favorites + source.id))
                         }) { Text(if (source.id in prefs.favorites) "★ Favorite" else "☆ Favorite") }
-                        TextButton(onClick = {
-                            model.setCalendarPreferences(prefs.copy(hidden =
-                                if (source.id in prefs.hidden) prefs.hidden - source.id else prefs.hidden + source.id))
-                        }) { Text(if (source.id in prefs.hidden) "Show" else "Hide") }
                     }
                     if (source.canCreate) TextButton(onClick = {
                         model.setCalendarPreferences(prefs.copy(defaultId =
@@ -583,6 +849,24 @@ private fun ManageCalendarsPage(model: HamViewModel, onBack: () -> Unit) {
             }
             if (matches.isEmpty()) item { Text("No matching calendars.") }
         }
+    }
+    colorTarget?.let { source ->
+        val choices = listOf("#007F86", "#B7602A", "#385EA7", "#7753A5", "#3D7E4B", "#B64052")
+        AlertDialog(onDismissRequest = { colorTarget = null }, title = { Text("${source.name} color") },
+            text = { Column {
+                Text("HAM only. Home Assistant is not changed.")
+                choices.chunked(3).forEach { row -> Row { row.forEach { color ->
+                    Surface(onClick = {
+                        model.setCalendarPreferences(model.calendarPreferences.value.setColor(source.id, color))
+                        colorTarget = null
+                    }, color = Color(android.graphics.Color.parseColor(color)),
+                        modifier = Modifier.size(52.dp).padding(4.dp), shape = MaterialTheme.shapes.medium) {}
+                } } }
+                TextButton(onClick = {
+                    model.setCalendarPreferences(model.calendarPreferences.value.setColor(source.id, null))
+                    colorTarget = null
+                }) { Text("Reset to Home Assistant color") }
+            } }, confirmButton = { TextButton(onClick = { colorTarget = null }) { Text("Close") } })
     }
 }
 

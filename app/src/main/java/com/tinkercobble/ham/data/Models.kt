@@ -3,9 +3,12 @@ package com.tinkercobble.ham.data
 import org.json.JSONObject
 import java.time.LocalDate
 import java.time.OffsetDateTime
+import java.time.LocalDateTime
+import java.time.Instant
 import java.time.ZoneId
 
-data class CalendarSource(val id: String, val name: String, val features: Int, val source: String = "Not provided by Home Assistant") {
+data class CalendarSource(val id: String, val name: String, val features: Int,
+    val source: String = "Not provided by Home Assistant", val haColor: String? = null) {
     val canCreate get() = features and 1 != 0
     val canUpdate get() = features and 4 != 0
 }
@@ -25,14 +28,18 @@ data class AgendaEvent(
     val recurrenceId: String?,
 ) {
     val date: LocalDate get() = localDate(start)
-    fun occursOn(day: LocalDate): Boolean {
-        val first = localDate(start)
+    fun occursOn(day: LocalDate, zone: ZoneId = ZoneId.systemDefault()): Boolean {
+        val first = if (allDay) LocalDate.parse(start.take(10)) else
+            (instant(start, zone) ?: return false).atZone(zone).toLocalDate()
         val last = if (allDay) LocalDate.parse(end.take(10)).minusDays(1)
-            else OffsetDateTime.parse(end).minusNanos(1).atZoneSameInstant(ZoneId.systemDefault()).toLocalDate()
+            else (instant(end, zone) ?: return false).minusNanos(1).atZone(zone).toLocalDate()
         return !day.isBefore(first) && !day.isAfter(last)
     }
     val identity: String get() = listOf(calendarId, uid ?: "", recurrenceId ?: "", start, end, summary).joinToString("|")
     companion object {
+        fun instant(value: String, zone: ZoneId = ZoneId.systemDefault()): Instant? = if (!value.contains('T')) null else
+            runCatching { OffsetDateTime.parse(value).toInstant() }
+                .recoverCatching { LocalDateTime.parse(value).atZone(zone).toInstant() }.getOrNull()
         fun fromJson(source: CalendarSource, obj: JSONObject): AgendaEvent {
             fun field(name: String): Pair<String, Boolean> {
                 val raw = obj.get(name)
@@ -51,7 +58,7 @@ data class AgendaEvent(
 }
 
 private fun localDate(value: String): LocalDate = if (value.contains('T'))
-    OffsetDateTime.parse(value).atZoneSameInstant(ZoneId.systemDefault()).toLocalDate()
+    (AgendaEvent.instant(value)?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: LocalDate.parse(value.take(10)))
 else LocalDate.parse(value.take(10))
 
 fun distinctEvents(events: List<AgendaEvent>): List<AgendaEvent> = events.distinctBy { it.identity }
