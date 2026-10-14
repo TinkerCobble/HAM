@@ -1,0 +1,58 @@
+package com.tinkercobble.ham.data
+
+import org.json.JSONObject
+import java.time.LocalDate
+import java.time.OffsetDateTime
+import java.time.ZoneId
+
+data class CalendarSource(val id: String, val name: String, val features: Int, val source: String = "Not provided by Home Assistant") {
+    val canCreate get() = features and 1 != 0
+    val canUpdate get() = features and 4 != 0
+}
+
+data class TodoEntry(val listName: String, val summary: String, val due: String?, val uid: String?)
+
+data class AgendaEvent(
+    val calendarId: String,
+    val calendarName: String,
+    val summary: String,
+    val start: String,
+    val end: String,
+    val allDay: Boolean,
+    val description: String,
+    val location: String,
+    val uid: String?,
+    val recurrenceId: String?,
+) {
+    val date: LocalDate get() = localDate(start)
+    fun occursOn(day: LocalDate): Boolean {
+        val first = localDate(start)
+        val last = if (allDay) LocalDate.parse(end.take(10)).minusDays(1)
+            else OffsetDateTime.parse(end).minusNanos(1).atZoneSameInstant(ZoneId.systemDefault()).toLocalDate()
+        return !day.isBefore(first) && !day.isAfter(last)
+    }
+    val identity: String get() = listOf(calendarId, uid ?: "", recurrenceId ?: "", start, end, summary).joinToString("|")
+    companion object {
+        fun fromJson(source: CalendarSource, obj: JSONObject): AgendaEvent {
+            fun field(name: String): Pair<String, Boolean> {
+                val raw = obj.get(name)
+                return if (raw is JSONObject) {
+                    if (raw.has("date")) raw.getString("date") to true else raw.getString("dateTime") to false
+                } else raw.toString() to !raw.toString().contains('T')
+            }
+            val (start, allDay) = field("start")
+            val (end, _) = field("end")
+            return AgendaEvent(source.id, source.name, obj.optString("summary", "Untitled event"), start, end,
+                allDay, obj.optString("description"), obj.optString("location"),
+                if (obj.isNull("uid")) null else obj.optString("uid").ifBlank { null },
+                if (obj.isNull("recurrence_id")) null else obj.optString("recurrence_id").ifBlank { null })
+        }
+    }
+}
+
+private fun localDate(value: String): LocalDate = if (value.contains('T'))
+    OffsetDateTime.parse(value).atZoneSameInstant(ZoneId.systemDefault()).toLocalDate()
+else LocalDate.parse(value.take(10))
+
+fun distinctEvents(events: List<AgendaEvent>): List<AgendaEvent> = events.distinctBy { it.identity }
+    .sortedWith(compareBy({ it.start }, { it.calendarName }, { it.summary }))
