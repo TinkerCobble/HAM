@@ -51,6 +51,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.repeatOnLifecycle
 import com.tinkercobble.ham.auth.HomeAssistantAuth
 import com.tinkercobble.ham.auth.ConnectionPolicy
@@ -89,6 +91,9 @@ import com.tinkercobble.ham.ui.HamViewModel
 import com.tinkercobble.ham.ui.HamTheme
 import com.tinkercobble.ham.updates.AvailableUpdate
 import com.tinkercobble.ham.updates.UpdateService
+import com.tinkercobble.ham.updates.UpdateSessionGate
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -131,6 +136,16 @@ private fun HamApp(model: HamViewModel = viewModel()) {
     var updateError by remember { mutableStateOf("") }
     var pendingInstall by remember { mutableStateOf<File?>(null) }
     var permissionNeeded by remember { mutableStateOf(false) }
+    var downloadJob by remember { mutableStateOf<Job?>(null) }
+    val updateSession = remember { UpdateSessionGate() }
+    DisposableEffect(activity) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP)
+                updateSession.stopped(android.os.SystemClock.elapsedRealtime())
+        }
+        activity.lifecycle.addObserver(observer)
+        onDispose { activity.lifecycle.removeObserver(observer) }
+    }
     fun openInstaller(file: File) {
         runCatching { context.startActivity(UpdateService.installerIntent(context, file)) }
             .onFailure { updateError = "Android could not open the installer. Try again." }
@@ -144,16 +159,22 @@ private fun HamApp(model: HamViewModel = viewModel()) {
         updateError = ""
         downloadingUpdate = true
         updateProgress = 0
-        scope.launch {
+        pendingInstall = null
+        downloadJob = scope.launch {
             try {
                 val file = UpdateService.downloadAndVerify(context, update) { updateProgress = it }
                 pendingInstall = file
                 downloadingUpdate = false
                 if (UpdateService.canInstall(context)) openInstaller(file)
                 else permissionNeeded = true
+            } catch (_: CancellationException) {
+                downloadingUpdate = false
+                updateError = "Download canceled."
             } catch (error: Exception) {
                 downloadingUpdate = false
                 updateError = error.message ?: "The update could not be verified."
+            } finally {
+                downloadJob = null
             }
         }
     }
@@ -171,13 +192,16 @@ private fun HamApp(model: HamViewModel = viewModel()) {
     }
     LaunchedEffect(Unit) {
         activity.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            delay(1_500)
-            while (true) {
-                if (UpdateService.shouldAutoCheck(context)) {
-                    val result = UpdateService.check(context, manual = false)
-                    result.update?.let { availableUpdate = it; showUpdatePrompt = true }
+            if (updateSession.beginNormalLaunch(android.os.SystemClock.elapsedRealtime(),
+                    pendingInstall != null || downloadingUpdate) && UpdateService.shouldAutoCheck(context)) {
+                delay(1_500)
+                val result = UpdateService.check(context, manual = false)
+                result.update?.let {
+                    if (updateSession.shouldPrompt(it.versionCode, BuildConfig.VERSION_CODE, manual = false)) {
+                        availableUpdate = it
+                        showUpdatePrompt = true
+                    }
                 }
-                delay(6L * 60L * 60L * 1000L)
             }
         }
     }
@@ -268,16 +292,20 @@ private fun HamApp(model: HamViewModel = viewModel()) {
     }
     availableUpdate?.let { update ->
         if (showUpdatePrompt) AlertDialog(onDismissRequest = {
-            UpdateService.later(context, update); showUpdatePrompt = false; availableUpdate = null
+            updateSession.dismiss(update.versionCode); UpdateService.later(context, update)
+            showUpdatePrompt = false; availableUpdate = null
         }, title = { Text("HAM Update Available") },
-            text = { Text("Version ${update.versionName} is ready to install.") },
-            confirmButton = { Button(onClick = { showUpdatePrompt = false; beginDownload(update) }) { Text("Update Now") } },
+            text = { Text("Installed ${BuildConfig.VERSION_NAME} · Available ${update.versionName}" +
+                update.releaseNotes.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty()) },
+            confirmButton = { Button(onClick = { showUpdatePrompt = false; beginDownload(update) }) { Text("Update now") } },
             dismissButton = { TextButton(onClick = {
-                UpdateService.later(context, update); showUpdatePrompt = false; availableUpdate = null
+                updateSession.dismiss(update.versionCode); UpdateService.later(context, update)
+                showUpdatePrompt = false; availableUpdate = null
             }) { Text("Later") } })
     }
     if (downloadingUpdate) AlertDialog(onDismissRequest = {}, title = { Text("Downloading HAM update") },
-        text = { Text("Downloading… $updateProgress%") }, confirmButton = {})
+        text = { Text(if (updateProgress > 0) "Downloading… $updateProgress%" else "Downloading…") },
+        confirmButton = { TextButton(onClick = { downloadJob?.cancel() }) { Text("Cancel") } })
     if (permissionNeeded) AlertDialog(onDismissRequest = { permissionNeeded = false },
         title = { Text("Allow HAM updates") },
         text = { Text("Allow HAM to install this verified update in Android settings.") },

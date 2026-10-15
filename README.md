@@ -2,7 +2,7 @@
 
 HAM is a native Android app for an existing [Home Assistant](https://www.home-assistant.io/) installation. It reads calendars and open to-do items, and can create events or edit event titles when the selected calendar reports support. Home Assistant and its configured providers remain the source of truth; HAM does not host calendar data.
 
-This repository contains the complete source for the **experimental HAM DEV 0.1.9-dev (versionCode 10)** build tested on a Samsung Note8 and distributed from [TinkerCobble's HAM page](https://tinkercobble.com/ham/). Its public Git history begins with an audited source snapshot; private development history was not copied here. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored in this repository.
+This repository contains the complete source for the **experimental HAM DEV 0.1.10-dev (versionCode 11)** build distributed from [TinkerCobble's HAM page](https://tinkercobble.com/ham/) after Note8 and Pixel 8 acceptance. Its public Git history begins with an audited source snapshot; private development history was not copied here. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored in this repository.
 
 ## Build
 
@@ -25,7 +25,7 @@ Calendar choices are keyed by the exact Home Assistant entity ID, including when
 
 ## Status and distribution
 
-The current public download is labeled **Experimental DEV build** on the [HAM product page](https://tinkercobble.com/ham/). It installs separately from a future Stable app. The release path for Stable is Note8 acceptance, then a data-preserving Pixel 8 acceptance, then an explicitly approved public release. There is no Stable APK, Google Play listing, or F-Droid submission. The F-Droid flavor is preparatory and uses that distribution channel's normal update route; eligibility and build verification remain open.
+The current public download is labeled **Experimental DEV build** on the [HAM product page](https://tinkercobble.com/ham/). Direct DEV installations check a separate DEV feed at launch and can download a verified newer APK after you choose Update now; Android always asks for installation approval. Later dismisses the prompt for the current app session. It installs separately from a future Stable app. The release path for Stable is Note8 acceptance, then a data-preserving Pixel 8 acceptance, then an explicitly approved public release. There is no Stable APK, Google Play listing, or F-Droid submission. The F-Droid flavor is preparatory and uses that distribution channel's normal update route; eligibility and build verification remain open.
 
 ## License and notices
 

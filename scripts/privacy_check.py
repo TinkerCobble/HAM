@@ -30,10 +30,11 @@ def check() -> list[str]:
     if 'android:exported="false"' not in manifest or 'HomeAssistantLoginActivity' not in manifest:
         errors.append("Authorization activity exposure changed")
 
-    direct_manifest = (ROOT / "app/src/stableDirect/AndroidManifest.xml").read_text(encoding="utf-8")
-    if 'android.permission.REQUEST_INSTALL_PACKAGES' not in direct_manifest or 'androidx.core.content.FileProvider' not in direct_manifest:
-        errors.append("Direct installer declaration missing")
-    for flavor in ("dev", "stablePlay", "stableFdroid"):
+    for flavor in ("dev", "stableDirect"):
+        direct_manifest = (ROOT / "app/src" / flavor / "AndroidManifest.xml").read_text(encoding="utf-8")
+        if 'android.permission.REQUEST_INSTALL_PACKAGES' not in direct_manifest or 'androidx.core.content.FileProvider' not in direct_manifest:
+            errors.append(f"Direct installer declaration missing from {flavor}")
+    for flavor in ("stablePlay", "stableFdroid"):
         flavor_dir = ROOT / "app/src" / flavor
         if any('REQUEST_INSTALL_PACKAGES' in path.read_text(encoding="utf-8") for path in flavor_dir.rglob("*.xml")):
             errors.append(f"Direct installer permission leaked into {flavor}")

@@ -5,6 +5,8 @@ data class AvailableUpdate(
     val versionName: String,
     val apkUrl: String,
     val sha256: String,
+    val minSdk: Int = 26,
+    val releaseNotes: String = "",
 )
 
 data class UpdateCheckResult(val message: String, val update: AvailableUpdate? = null)

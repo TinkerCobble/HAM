@@ -22,8 +22,8 @@ android {
             applicationIdSuffix = ".dev"
             // The public DEV signer rotates on Android 9+; older platforms cannot verify it.
             minSdk = 28
-            versionCode = 10
-            versionName = "0.1.9-dev"
+            versionCode = 11
+            versionName = "0.1.10-dev"
             resValue("string", "app_name", "HAM DEV")
         }
         create("stableDirect") {
