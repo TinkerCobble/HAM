@@ -1,0 +1,11 @@
+Categories:
+  - Time
+License: GPL-3.0-only
+WebSite: https://tinkercobble.com/ham/
+SourceCode: https://github.com/TinkerCobble/HAM
+IssueTracker: https://github.com/TinkerCobble/HAM/issues
+RepoType: git
+Repo: https://github.com/TinkerCobble/HAM.git
+UpdateCheckMode: None
+AutoUpdateMode: None
+Builds: []

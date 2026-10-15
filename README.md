@@ -1,8 +1,14 @@
 # HAM — Home Agenda Manager
 
+F-Droid preparation is in progress; HAM is not listed there and no Stable APK
+exists. The proposed listing, synthetic screenshots, disabled build metadata,
+and release gates are in [F-Droid preparation](docs/FDROID_PREPARATION.md).
+Published experimental DEV changes are in [CHANGELOG.md](CHANGELOG.md).
+Report suspected vulnerabilities privately using [SECURITY.md](SECURITY.md).
+
 HAM is a native Android app for an existing [Home Assistant](https://www.home-assistant.io/) installation. It reads calendars and open to-do items, and can create events or edit event titles when the selected calendar reports support. Home Assistant and its configured providers remain the source of truth; HAM does not host calendar data.
 
-This repository contains the complete source for the **experimental HAM DEV 0.1.10-dev (versionCode 11)** build distributed from [TinkerCobble's HAM page](https://tinkercobble.com/ham/) after Note8 and Pixel 8 acceptance. Its public Git history begins with an audited source snapshot; private development history was not copied here. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored in this repository.
+The exact source for the **experimental HAM DEV 0.1.10-dev (versionCode 11)** APK is public commit `0f6ed9e9bfc37cefa3c49fdb215bf44061f5355c` and its immutable source archive on [TinkerCobble's HAM page](https://tinkercobble.com/ham/). This preparation branch adds draft F-Droid material and a debug-only screenshot fixture after that tested APK; it is not the released code 11 source commit. Public Git history began with an audited snapshot, without private development history. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored here.
 
 ## Build
 

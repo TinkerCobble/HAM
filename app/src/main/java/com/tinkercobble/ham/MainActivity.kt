@@ -104,7 +104,17 @@ import java.time.format.DateTimeFormatter
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { HamTheme { HamApp() } }
+        setContent {
+            val model: HamViewModel = viewModel()
+            if (BuildConfig.DEBUG && intent.getBooleanExtra("ham_demo_fixture", false)) {
+                remember(model) {
+                    Class.forName("com.tinkercobble.ham.DemoFixture")
+                        .getMethod("seed", HamViewModel::class.java).invoke(null, model)
+                    true
+                }
+            }
+            HamTheme { HamApp(model) }
+        }
     }
 }
 
@@ -775,7 +785,8 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     Text("Connection", style = MaterialTheme.typography.headlineMedium)
     if (model.connected.value) {
-        Text("Connected to ${model.server.value}")
+        Text(if (BuildConfig.DEBUG && model.demoPreview.value)
+            "Demo preview — no Home Assistant connection" else "Connected to ${model.server.value}")
         Button(onClick = model::refresh) { Text("Refresh") }
         OutlinedButton(onClick = { privacyOpen = true }) { Text("Privacy & Connection") }
         Text("${model.calendars.value.size} calendars available", Modifier.padding(top = 12.dp))

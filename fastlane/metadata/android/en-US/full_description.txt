@@ -1,0 +1,7 @@
+Home Agenda Manager (HAM) is an independent Android agenda for your own Home Assistant installation. It requires a Home Assistant server and a user account there. Home Assistant and its connected calendar providers remain the authority for calendar records.
+
+HAM shows Today, Month, next 7 days, and 3-day views, calendar selection, event details, loaded-range search, and open tasks. It can create an all-day event only on a calendar that reports create support. Title-only editing is limited to eligible events on calendars that report update support. It does not edit tasks or provide a persistent offline event cache.
+
+HAM connects directly to the Home Assistant address you choose. There is no required TinkerCobble account or TinkerCobble-hosted calendar database. Remote access requires a reachable HTTPS Home Assistant address; private-network HTTP requires an explicit warning.
+
+Stable is in preparation. This listing text describes the proposed Stable app, not an app currently available through F-Droid.

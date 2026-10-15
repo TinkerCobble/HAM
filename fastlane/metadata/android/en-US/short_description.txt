@@ -1,0 +1,1 @@
+Calendar views for your own Home Assistant installation
