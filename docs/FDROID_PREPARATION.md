@@ -100,9 +100,12 @@ reference proof. A second clean worktree built private preparation source
 commit `1caddb1b601636845b053544b6bbc5a9901fc35d` with the same
 `:app:assembleStableFdroidRelease --no-daemon` recipe and reproduced the
 current unsigned SHA-256 exactly. This is local reproducibility only; an
-F-Droid buildserver verification remains open. The local draft YAML
-parsed successfully; the official `fdroid` CLI was not installed on this host,
-so its metadata lint and scanner have not passed. The disabled recipe has no
+F-Droid buildserver verification remains open. The draft YAML parsed and
+`fdroidserver` 2.4.5 `fdroid lint com.tinkercobble.ham` passed after checking
+`Calendar & Agenda` against the current official fdroiddata category file.
+The local Windows CLI warned that it could not find `apksigner`; this lint
+run did not verify an APK signature. F-Droid scanner and buildserver checks
+have not passed because there is no enabled signed Stable build. The disabled recipe has no
 `Builds` entry and cannot trigger an upload.
 The same unsigned hash was built from the audited public preparation branch
 `97807a638b584c182d8461526481626af92306a0`. The public main commit
