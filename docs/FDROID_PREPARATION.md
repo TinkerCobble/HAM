@@ -104,6 +104,10 @@ F-Droid buildserver verification remains open. The local draft YAML
 parsed successfully; the official `fdroid` CLI was not installed on this host,
 so its metadata lint and scanner have not passed. The disabled recipe has no
 `Builds` entry and cannot trigger an upload.
+The same unsigned hash was built from the audited public preparation branch
+`97807a638b584c182d8461526481626af92306a0`. The public main commit
+`0f6ed9e9bfc37cefa3c49fdb215bf44061f5355c` remains the source matching
+the current released DEV APK, rather than this new preparation source.
 
 Stable F-Droid debug/release builds, F-Droid unit tests and lint, DEV/Direct
 unit tests, DEV/Direct/Play debug builds, and the public source privacy check
