@@ -1,0 +1,10 @@
+# Public HAM — Chat and Codex handoff
+
+## Latest session — 2026-10-20, privacy CI and public-file audit
+
+- **Repository and branch:** Public `TinkerCobble/HAM` `main`, based on code 13 source `24a8772bd253f5fe1800d6b0627f520bc3a49dbf`. Privacy repair commit `1a02fc1426c57de1592018650425f416bdd8ccfd`; follow-up checker commit `8ad4c67b237a327c6b9d796e7b09f85a2881cab7` was pushed and remote-read back. This handoff's own commit is the current `main` HEAD after push.
+- **What changed and why:** Replaced the incompatible Gitleaks Go install with a pinned, checksum-verified official binary. History, source, and published-artifact checks run independently. The data-flow document now accurately describes DEV updates, screenshot storage, address lookup, and Maps. See [audit](PRIVACY_AUDIT_20261020.md) and [release checklist](PRIVACY_RELEASE_CHECKLIST.md).
+- **Validation:** Gitleaks 8.30.1 scanned all initially reachable eight public commits and current source with no findings. Source and current live-artifact checks passed locally. Private temporary synthetic fixtures proved clean and finding exit behavior without publishing the fixtures. [GitHub Actions run 39513781309](https://github.com/TinkerCobble/HAM/actions/runs/39513781309) passed all three jobs after the checker refinement. The separate website privacy correction was deployed and read back at the canonical site.
+- **Release state:** Documentation and checks only; code 13 remains the installed/public DEV version. No APK, feed, Stable release, or phone installation changed.
+- **Migrations and recovery:** None. Public commits have separate history from private development. The previous public commit remains available for a normal Git revert; release artifacts are unchanged.
+- **Blockers and next actions:** Continue manual privacy review and exact staged APK/website preflight before any future release. Device network capture and private server storage were outside this audit. Future app promotion remains Note8 then Pixel 8 OTA.

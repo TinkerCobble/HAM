@@ -1,0 +1,5 @@
+# Public HAM source rules
+
+This is the audited public source repository, with Git history independent of private development. Never merge, mirror, or push private development history here. Keep real Home Assistant configuration, calendars, events, screenshots, addresses, contacts, credentials, signing material, logs, device identifiers, and local paths out of source, fixtures, build outputs, and release files. Use synthetic examples.
+
+Before a public push, run Gitleaks on the current files and all reachable Git history, `python scripts/privacy_check.py`, and the staged artifact review described in `docs/PRIVACY_RELEASE_CHECKLIST.md` when release files change. Confirm the exact public account and repository before pushing. Read `docs/PRIVACY_DATA_FLOW.md` and `docs/STATUS.md` for current privacy and release state. A green scanner is not proof of complete privacy. Record evidence and limitations without private values in `docs/CHAT_HANDOFF.md` and status; do not rewrite public history or remove published artifacts without owner approval.
