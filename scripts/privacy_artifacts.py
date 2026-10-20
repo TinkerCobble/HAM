@@ -14,16 +14,13 @@ import pathlib
 import re
 import sys
 import urllib.request
+import urllib.parse
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LOCK = ROOT / "release/privacy-artifacts.json"
 BASE = "https://tinkercobble.com"
-PAGE_PATHS = (
-    "ham/", "ham/privacy/", "ham/terms/", "ham/dev-update.json", "styles.css",
-    "downloads/ham/ham-0.1.12-dev-code13.apk.sha256",
-    "downloads/ham/ham-0.1.12-dev-code13-source.zip.sha256",
-)
+PAGE_PATHS = ("ham/", "ham/privacy/", "ham/terms/", "ham/dev-update.json", "styles.css")
 MAX_DOWNLOAD = 80 * 1024 * 1024
 MAX_UNCOMPRESSED = 200 * 1024 * 1024
 PATTERNS = {
@@ -46,6 +43,16 @@ def fetch(url: str) -> bytes:
     if not data or len(data) > MAX_DOWNLOAD:
         raise ValueError("Artifact is missing or exceeds the review size limit")
     return data
+
+
+def checksum_paths(lock: dict) -> tuple[str, str]:
+    paths = []
+    for key in ("apk_url", "source_url"):
+        url = lock[key]
+        if not url.startswith(BASE + "/downloads/ham/"):
+            raise ValueError("Artifact is outside the approved HAM download path")
+        paths.append(urllib.parse.urlsplit(url).path.lstrip("/") + ".sha256")
+    return paths[0], paths[1]
 
 
 def check_bytes(label: str, data: bytes, errors: list[str], *, scan_network: bool = True) -> None:
@@ -98,7 +105,8 @@ def audit(apk: bytes, source: bytes, pages: dict[str, bytes], lock: dict) -> lis
             check_zip(label, data, errors, apk=label == "APK")
         except zipfile.BadZipFile:
             errors.append(f"{label}: invalid ZIP")
-    for path in PAGE_PATHS:
+    sidecars = checksum_paths(lock)
+    for path in PAGE_PATHS + sidecars:
         data = pages.get(path)
         if not data:
             errors.append(f"Website {path}: missing (check skipped)")
@@ -121,7 +129,7 @@ def audit(apk: bytes, source: bytes, pages: dict[str, bytes], lock: dict) -> lis
     for path in ("ham/privacy/", "ham/terms/"):
         if b"HAM" not in pages.get(path, b"") or b"mailto:" not in pages.get(path, b""):
             errors.append(f"Website {path}: legal/contact content missing")
-    for path, expected in ((PAGE_PATHS[-2], lock["apk_sha256"]), (PAGE_PATHS[-1], lock["source_sha256"])):
+    for path, expected in ((sidecars[0], lock["apk_sha256"]), (sidecars[1], lock["source_sha256"])):
         if expected.lower().encode() not in pages.get(path, b"").lower():
             errors.append(f"Website {path}: published checksum differs from pinned artifact")
     return errors
@@ -141,14 +149,15 @@ def main() -> int:
         if args.public:
             apk = fetch(lock["apk_url"])
             source = fetch(lock["source_url"])
-            pages = {path: fetch(f"{BASE}/{path}") for path in PAGE_PATHS}
+            pages = {path: fetch(f"{BASE}/{path}") for path in PAGE_PATHS + checksum_paths(lock)}
         else:
             if not all((args.apk, args.source_zip, args.website_dir)):
                 parser.error("--staged requires --apk, --source-zip, and --website-dir")
             apk = args.apk.read_bytes()
             source = args.source_zip.read_bytes()
             pages = {path: (args.website_dir / path / "index.html" if path.endswith("/")
-                            else args.website_dir / path).read_bytes() for path in PAGE_PATHS}
+                            else args.website_dir / path).read_bytes()
+                     for path in PAGE_PATHS + checksum_paths(lock)}
         problems = audit(apk, source, pages, lock)
     except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
         print(f"FAIL: privacy preflight could not complete ({type(exc).__name__})")
