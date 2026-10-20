@@ -32,6 +32,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     private val calendarStore = CalendarPreferenceStore(application)
     private val statusPrefs = application.getSharedPreferences("ham-connection-status", android.content.Context.MODE_PRIVATE)
     var connected = androidx.compose.runtime.mutableStateOf(client.connected)
+    var demoPreview = androidx.compose.runtime.mutableStateOf(false)
     var server = androidx.compose.runtime.mutableStateOf(client.server.orEmpty())
     var clientId = androidx.compose.runtime.mutableStateOf(client.clientId.orEmpty())
     var authRequest = androidx.compose.runtime.mutableStateOf<AuthRequest?>(null)

@@ -4,7 +4,7 @@ import java.net.URI
 
 enum class UpdateRoute { INTERNAL, GOOGLE_PLAY, F_DROID, DIRECT }
 
-/** The installer decides which updater owns this installation. DEV never uses a public feed. */
+/** Routes a Stable Direct installation by its installer; DEV has a separate updater. */
 object DirectUpdatePolicy {
     const val FEED_URL = "https://tinkercobble.com/ham/stable-update.json"
     const val PRODUCT_URL = "https://tinkercobble.com/ham/"

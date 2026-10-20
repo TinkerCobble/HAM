@@ -1,0 +1,3 @@
+# Load HAM's authenticated private screenshot endpoint. Calendar ownership stays
+# with the existing Home Assistant calendar integrations.
+ham_attachments:

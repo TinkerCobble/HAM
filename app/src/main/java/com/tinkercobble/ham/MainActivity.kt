@@ -3,11 +3,14 @@ package com.tinkercobble.ham
 import android.os.Bundle
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
+import android.graphics.BitmapFactory
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -70,6 +73,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -102,9 +106,34 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
+    private var sharedScreenshot by mutableStateOf<Uri?>(null)
+    private fun acceptShare(incoming: Intent?) {
+        if (incoming?.action == Intent.ACTION_SEND && incoming.type?.startsWith("image/") == true)
+            sharedScreenshot = (if (android.os.Build.VERSION.SDK_INT >= 33)
+                incoming.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            else @Suppress("DEPRECATION") incoming.getParcelableExtra(Intent.EXTRA_STREAM))
+                ?: incoming.clipData?.getItemAt(0)?.uri
+                ?: (incoming.extras?.get(Intent.EXTRA_STREAM) as? String)?.let(Uri::parse)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { HamTheme { HamApp() } }
+        acceptShare(intent)
+        setContent {
+            val model: HamViewModel = viewModel()
+            if (BuildConfig.DEBUG && intent.getBooleanExtra("ham_demo_fixture", false)) {
+                remember(model) {
+                    Class.forName("com.tinkercobble.ham.DemoFixture")
+                        .getMethod("seed", HamViewModel::class.java).invoke(null, model)
+                    true
+                }
+            }
+            HamTheme { HamApp(model, sharedScreenshot) { sharedScreenshot = null } }
+        }
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        acceptShare(intent)
     }
 }
 
@@ -113,11 +142,18 @@ private val dayFormat = DateTimeFormatter.ofPattern("EEE, MMM d")
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun HamApp(model: HamViewModel = viewModel()) {
+private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, clearShare: () -> Unit) {
     val context = LocalContext.current
     val activity = context as ComponentActivity
     val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf(if (model.connected.value) "Today" else "Settings") }
+    var screenshotUri by remember { mutableStateOf<Uri?>(null) }
+    val screenshotPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) { screenshotUri = uri; page = "Screenshot" }
+    }
+    LaunchedEffect(sharedScreenshot) {
+        if (sharedScreenshot != null) { screenshotUri = sharedScreenshot; page = "Screenshot"; clearShare() }
+    }
     var returnPage by remember { mutableStateOf("Today") }
     var manageId by remember { mutableStateOf<String?>(null) }
     val calendarScroll = rememberLazyListState()
@@ -257,13 +293,18 @@ private fun HamApp(model: HamViewModel = viewModel()) {
                             if (model.message.value.isNotBlank() && model.message.value != "Updated from Home Assistant")
                                 Text(model.message.value, style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (!model.connected.value && page != "Settings") {
+                            if (!model.connected.value && page !in listOf("Settings", "Screenshot", "Quick Add")) {
                                 Text("Connect to Home Assistant to see your calendar.")
                                 TextButton(onClick = { page = "Settings" }) { Text("Open Settings") }
                             } else when (page) {
                                 "Today" -> TodayPage(model, ::openCalendars)
                                 "Calendar" -> CalendarPage(model, calendarScroll, ::openCalendars)
-                                "Quick Add" -> QuickAddPage(model)
+                                "Quick Add" -> QuickAddPage(model, onScreenshot = {
+                                    screenshotPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                }, onResume = { screenshotUri = null; page = "Screenshot" })
+                                "Screenshot" -> ScreenshotPage(model, screenshotUri,
+                                    onCancel = { screenshotUri = null; page = "Quick Add" },
+                                    onSaved = { screenshotUri = null; model.activeAgenda.value = "Calendar"; page = "Calendar" })
                                 "Tasks" -> TasksPage(model)
                                 "Search" -> SearchPage(model, ::openCalendars)
                                 "Calendars" -> ManageCalendarsPage(model, { page = returnPage }, manageId)
@@ -592,6 +633,26 @@ private fun EventDetails(event: AgendaEvent, source: CalendarSource?, model: Ham
     close: () -> Unit, manage: (String) -> Unit) {
     var title by remember(event.identity) { mutableStateOf(event.summary) }
     val editable = source?.canUpdate == true && event.uid != null && event.recurrenceId == null
+    val attachmentId = remember(event.identity) {
+        Regex("ham-attachment://([0-9a-f-]{36})").find(event.description)?.groupValues?.get(1)
+    }
+    val context = LocalContext.current
+    var attachmentImage by remember(event.identity) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var attachmentError by remember(event.identity) { mutableStateOf("") }
+    LaunchedEffect(attachmentId) {
+        if (attachmentId != null) {
+            try {
+                val bytes = com.tinkercobble.ham.data.HomeAssistantClient(context).screenshot(attachmentId)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
+                attachmentImage = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+                    BitmapFactory.Options().apply { inSampleSize = sample })
+                    ?: error("Could not display screenshot")
+            } catch (e: Exception) { attachmentError = e.message ?: "Screenshot unavailable" }
+        }
+    }
     AlertDialog(onDismissRequest = close, title = { Text("Event details") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             if (editable) OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") })
@@ -606,6 +667,12 @@ private fun EventDetails(event: AgendaEvent, source: CalendarSource?, model: Ham
                 Text("Description and provenance notes", style = MaterialTheme.typography.labelMedium)
                 SelectionContainer { Text(event.description) }
             }
+            if (attachmentId != null) {
+                Text("Original screenshot", style = MaterialTheme.typography.labelMedium)
+                attachmentImage?.let { Image(it.asImageBitmap(), "Original event screenshot",
+                    Modifier.fillMaxWidth().heightIn(max = 280.dp)) }
+                if (attachmentError.isNotBlank()) Text(attachmentError, color = MaterialTheme.colorScheme.error)
+            }
             TextButton(onClick = { manage(event.calendarId) }) { Text("Manage this calendar") }
             if (!editable) Text("This event can't be edited here.", style = MaterialTheme.typography.bodySmall)
         }
@@ -617,9 +684,12 @@ private fun EventDetails(event: AgendaEvent, source: CalendarSource?, model: Ham
 }
 
 @Composable
-private fun QuickAddPage(model: HamViewModel) {
+private fun QuickAddPage(model: HamViewModel, onScreenshot: () -> Unit, onResume: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
     Text("Quick Add", style = MaterialTheme.typography.headlineMedium)
+    OutlinedButton(onClick = onScreenshot) { Text("Add from Screenshot") }
+    if (com.tinkercobble.ham.data.ScreenshotDraftStore(LocalContext.current).load() != null)
+        TextButton(onClick = onResume) { Text("Resume screenshot draft") }
     Text("Create an all-day event.", Modifier.padding(vertical = 8.dp))
     DayPicker(model)
     val prefs = model.calendarPreferences.value
@@ -669,7 +739,7 @@ private fun QuickAddPage(model: HamViewModel) {
 }
 
 @Composable
-private fun CalendarPicker(model: HamViewModel, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
+internal fun CalendarPicker(model: HamViewModel, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
     var query by remember { mutableStateOf("") }
     var showHidden by remember { mutableStateOf(false) }
     val prefs = model.calendarPreferences.value
@@ -775,7 +845,8 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     Text("Connection", style = MaterialTheme.typography.headlineMedium)
     if (model.connected.value) {
-        Text("Connected to ${model.server.value}")
+        Text(if (BuildConfig.DEBUG && model.demoPreview.value)
+            "Demo preview — no Home Assistant connection" else "Connected to ${model.server.value}")
         Button(onClick = model::refresh) { Text("Refresh") }
         OutlinedButton(onClick = { privacyOpen = true }) { Text("Privacy & Connection") }
         Text("${model.calendars.value.size} calendars available", Modifier.padding(top = 12.dp))

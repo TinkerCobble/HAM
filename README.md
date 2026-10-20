@@ -2,7 +2,7 @@
 
 HAM is a native Android app for an existing [Home Assistant](https://www.home-assistant.io/) installation. It reads calendars and open to-do items, and can create events or edit event titles when the selected calendar reports support. Home Assistant and its configured providers remain the source of truth; HAM does not host calendar data.
 
-This repository contains the complete source for the **experimental HAM DEV 0.1.10-dev (versionCode 11)** build distributed from [TinkerCobble's HAM page](https://tinkercobble.com/ham/) after Note8 and Pixel 8 acceptance. Its public Git history begins with an audited source snapshot; private development history was not copied here. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored in this repository.
+This repository contains the complete source for the **experimental HAM DEV 0.1.12-dev (versionCode 13)** build prepared for [TinkerCobble's HAM page](https://tinkercobble.com/ham/) after Note8 acceptance. Its public Git history begins with an audited source snapshot; private development history was not copied here. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored in this repository.
 
 ## Build
 
@@ -23,12 +23,14 @@ In HAM DEV, open Settings, enter the address of a Home Assistant installation yo
 
 Calendar choices are keyed by the exact Home Assistant entity ID, including when names are identical. A calendar must report write support before HAM offers creation. There is no automatically selected first writable calendar; a user can choose an explicit default. Month, next seven days, and three-day views are available. Visibility, favorites, and color choices are saved locally. Tasks are read-only in this source snapshot.
 
+Screenshot import accepts an image from Android Share or the system photo picker, extracts event details on the device, and presents them for review. An optional address check queries OpenStreetMap only when requested. Saving uses an explicitly chosen writable Home Assistant calendar and a private authenticated attachment endpoint; see [screenshot import details](docs/SCREENSHOT_IMPORT.md). The endpoint's complete source is in `home-assistant/` and must be installed separately by a Home Assistant administrator.
+
 ## Status and distribution
 
 The current public download is labeled **Experimental DEV build** on the [HAM product page](https://tinkercobble.com/ham/). Direct DEV installations check a separate DEV feed at launch and can download a verified newer APK after you choose Update now; Android always asks for installation approval. Later dismisses the prompt for the current app session. It installs separately from a future Stable app. The release path for Stable is Note8 acceptance, then a data-preserving Pixel 8 acceptance, then an explicitly approved public release. There is no Stable APK, Google Play listing, or F-Droid submission. The F-Droid flavor is preparatory and uses that distribution channel's normal update route; eligibility and build verification remain open.
 
 ## License and notices
 
-HAM-authored code and project-owned icon artwork, including `design/ham-approved-original.png` and generated variants, are offered under [GNU GPL v3 only](LICENSE) (`GPL-3.0-only`). Third-party dependencies retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md) and [artwork/dependency notes](docs/OPEN_SOURCE.md). The original icon was created by the project owner using AI tools and approved for this license. No third-party artwork source was identified.
+HAM-authored code and project-owned icon artwork, including `design/ham-approved-original.png` and generated variants, are offered under [GNU GPL v3 only](LICENSE) (`GPL-3.0-only`). Third-party dependencies retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md), [OCR binary license materials](third_party_licenses/tesseract4android-4.9.0/), and [artwork/dependency notes](docs/OPEN_SOURCE.md). The original icon was created by the project owner using AI tools and approved for this license. No third-party artwork source was identified.
 
 See the public [Privacy Policy](https://tinkercobble.com/ham/privacy/) and [Terms](https://tinkercobble.com/ham/terms/). For support or privacy questions, use [support@tinkercobble.com](mailto:support@tinkercobble.com).

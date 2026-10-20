@@ -1,0 +1,10 @@
+{
+  "domain": "ham_attachments",
+  "name": "HAM private attachments",
+  "version": "0.1.0",
+  "documentation": "https://github.com/TinkerCobble/HAM",
+  "codeowners": [],
+  "requirements": [],
+  "dependencies": ["http"],
+  "iot_class": "local_push"
+}

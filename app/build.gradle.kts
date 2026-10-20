@@ -22,8 +22,8 @@ android {
             applicationIdSuffix = ".dev"
             // The public DEV signer rotates on Android 9+; older platforms cannot verify it.
             minSdk = 28
-            versionCode = 11
-            versionName = "0.1.10-dev"
+            versionCode = 13
+            versionName = "0.1.12-dev"
             resValue("string", "app_name", "HAM DEV")
         }
         create("stableDirect") {
@@ -63,5 +63,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     debugImplementation(libs.androidx.compose.ui.tooling)
     implementation(libs.okhttp)
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
     testImplementation(libs.junit)
 }

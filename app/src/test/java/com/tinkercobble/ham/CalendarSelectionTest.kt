@@ -8,8 +8,8 @@ import org.junit.Test
 
 class CalendarSelectionTest {
     private val a = CalendarSource("calendar.appointments", "Appointments", 1, "Provider A")
-    private val b = CalendarSource("calendar.other_appointments", "Appointments", 1, "Provider B")
-    private val readOnly = CalendarSource("calendar.read_only", "Read only", 0)
+    private val b = CalendarSource("calendar.voice_appointments", "Appointments", 1, "Provider B")
+    private val readOnly = CalendarSource("calendar.scouts", "Scouts", 0)
 
     @Test fun sameNamesRemainSeparateAndOnlyExactIdResolves() {
         val list = listOf(a, b, readOnly)
@@ -18,7 +18,7 @@ class CalendarSelectionTest {
         assertNull(CalendarSelection.resolveWritable("calendar.missing", list))
         assertNull(CalendarSelection.resolveWritable(readOnly.id, list))
         assertEquals(listOf(a, b), CalendarSelection.search(list, "Appointments"))
-        assertEquals(listOf(b), CalendarSelection.search(list, "other_appointments"))
+        assertEquals(listOf(b), CalendarSelection.search(list, "voice_appointments"))
         assertEquals(listOf(b), CalendarSelection.search(list, "Provider B"))
     }
 

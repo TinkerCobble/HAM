@@ -18,10 +18,14 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.io.File
+import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 
 class HomeAssistantClient(context: Context) {
     data class EventRead(val events: List<AgendaEvent>, val succeeded: Set<String>, val failed: Map<String, String>)
@@ -147,6 +151,101 @@ class HomeAssistantClient(context: Context) {
         val data = JSONObject().put("entity_id", source.id).put("summary", summary.trim())
             .put("start_date", date.toString()).put("end_date", date.plusDays(1).toString())
         request("/api/services/calendar/create_event", data)
+    }
+
+    /** The attachment endpoint belongs to HAM's optional authenticated HA integration. */
+    suspend fun uploadScreenshot(file: File): String = withContext(Dispatchers.IO) {
+        require(file.isFile && file.length() in 1..10_485_760) { "Choose a screenshot under 10 MB" }
+        val auth = current()
+        val connection = URL(auth.server + "/api/ham_attachments").openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 30_000
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.setRequestProperty("Authorization", "Bearer ${auth.accessToken}")
+        connection.setRequestProperty("Content-Type", "application/octet-stream")
+        try {
+            file.inputStream().use { input -> connection.outputStream.use { output -> input.copyTo(output) } }
+            val status = connection.responseCode
+            if (status !in 200..299) error("Secure screenshot storage unavailable ($status). Event was not created.")
+            val result = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            val localHash = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+                .joinToString("") { "%02x".format(it) }
+            require(result.optString("sha256").equals(localHash, true)) { "Stored screenshot checksum differs" }
+            val id = result.getString("id")
+            require(Regex("[0-9a-f-]{36}").matches(id)) { "Invalid attachment response" }
+            id
+        } finally { connection.disconnect() }
+    }
+
+    suspend fun screenshot(id: String): ByteArray = withContext(Dispatchers.IO) {
+        require(Regex("[0-9a-f-]{36}").matches(id))
+        val auth = current()
+        val connection = URL(auth.server + "/api/ham_attachments/$id").openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 30_000
+        connection.setRequestProperty("Authorization", "Bearer ${auth.accessToken}")
+        try {
+            if (connection.responseCode !in 200..299) error("Screenshot is unavailable")
+            connection.inputStream.use { stream ->
+                val result = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = stream.read(buffer)
+                    if (count < 0) break
+                    require(result.size() + count <= 10_485_760) { "Screenshot exceeds size limit" }
+                    result.write(buffer, 0, count)
+                }
+                result.toByteArray()
+            }
+        } finally { connection.disconnect() }
+    }
+
+    suspend fun deleteScreenshot(id: String) = withContext(Dispatchers.IO) {
+        require(Regex("[0-9a-f-]{36}").matches(id))
+        val auth = current()
+        val connection = URL(auth.server + "/api/ham_attachments/$id").openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 20_000
+        connection.requestMethod = "DELETE"
+        connection.setRequestProperty("Authorization", "Bearer ${auth.accessToken}")
+        try { if (connection.responseCode !in 200..299 && connection.responseCode != 404)
+            error("Could not remove unused screenshot from Home Assistant") }
+        finally { connection.disconnect() }
+    }
+
+    suspend fun createScreenshotEvent(sourceId: String, date: LocalDate, title: String,
+        start: LocalTime?, end: LocalTime?, location: String, description: String,
+        attachmentId: String, allowDuplicate: Boolean = false): AgendaEvent {
+        val source = CalendarSelection.resolveWritable(sourceId, calendars())
+            ?: error("Calendar unavailable or read-only. Choose another calendar.")
+        require(title.isNotBlank()) { "Enter an event title" }
+        require(start == null && end == null || start != null && end != null && end.isAfter(start)) {
+            "Enter a valid start and end time, or choose all-day"
+        }
+        require(Regex("[0-9a-f-]{36}").matches(attachmentId)) { "Invalid screenshot reference" }
+        // A fresh read is mandatory; this also makes a retry after a lost service response safe.
+        val existing = events(listOf(source), date, date.plusDays(2))
+        val marker = "ham-attachment://$attachmentId"
+        existing.firstOrNull { it.description.contains(marker) }?.let { return it }
+        if (!allowDuplicate && existing.any { it.date == date && it.summary.equals(title.trim(), true) })
+            error("A similar event already exists on this calendar and date. Review it before saving another.")
+        val data = JSONObject().put("entity_id", source.id).put("summary", title.trim())
+            .put("description", description.trim() + "\n\nHAM screenshot: $marker\nOpen in HAM on a connected device.")
+            .put("location", location.trim())
+        if (start == null || end == null) {
+            data.put("start_date", date.toString()).put("end_date", date.plusDays(1).toString())
+        } else {
+            val zone = ZoneId.systemDefault()
+            data.put("start_date_time", date.atTime(start).atZone(zone).toOffsetDateTime().toString())
+                .put("end_date_time", date.atTime(end).atZone(zone).toOffsetDateTime().toString())
+        }
+        request("/api/services/calendar/create_event", data)
+        return events(listOf(source), date, date.plusDays(2)).firstOrNull { it.description.contains(marker) }
+            ?: error("Home Assistant accepted the request, but event read-back is pending. Do not retry until the calendar refreshes.")
     }
 
     suspend fun updateTitle(source: CalendarSource, event: AgendaEvent, title: String) {

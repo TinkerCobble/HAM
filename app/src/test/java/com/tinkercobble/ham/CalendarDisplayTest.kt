@@ -51,8 +51,8 @@ class CalendarDisplayTest {
     }
 
     @Test fun visibilityColorsAndViewPersistWithoutChangingCalendarIdentity() {
-        val a = CalendarSource("calendar.one", "Shared Calendar", 1)
-        val b = CalendarSource("calendar.two", "Shared Calendar", 0)
+        val a = CalendarSource("calendar.one", "Scouts", 1)
+        val b = CalendarSource("calendar.two", "Scouts", 0)
         val prefs = CalendarPreferences(defaultId = a.id).hideAll(listOf(a, b))
             .setColor(b.id, "#123ABC").copy(view = CalendarView.THREE_DAYS)
         assertEquals(setOf(a.id, b.id), prefs.hidden)

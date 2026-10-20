@@ -16,7 +16,7 @@ EXPECTED_LIBRARIES = {
     "androidx-compose-ui-tooling-preview", "androidx-compose-material3",
     "androidx-compose-foundation", "androidx-compose-ui-tooling", "junit", "okhttp",
 }
-ALLOWED_HOSTS = {"tinkercobble.com", "your-home-assistant.example"}
+ALLOWED_HOSTS = {"tinkercobble.com", "your-home-assistant.example", "nominatim.openstreetmap.org"}
 
 
 def check() -> list[str]:
@@ -46,6 +46,14 @@ def check() -> list[str]:
     libraries = set(re.findall(r'^([a-z][a-z0-9-]+)\s*=\s*\{\s*module\s*=', catalog, re.M))
     if libraries != EXPECTED_LIBRARIES:
         errors.append(f"Dependency inventory changed: {sorted(libraries ^ EXPECTED_LIBRARIES)}")
+    build = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
+    if 'cz.adaptech.tesseract4android:tesseract4android:4.9.0' not in build:
+        errors.append("Pinned on-device OCR dependency missing or changed")
+    if 'android.intent.action.SEND' not in manifest or 'android:mimeType="image/*"' not in manifest:
+        errors.append("Image share surface changed")
+    attachment = ROOT / "home-assistant/custom_components/ham_attachments/__init__.py"
+    if not attachment.exists() or 'requires_auth = True' not in attachment.read_text(encoding="utf-8"):
+        errors.append("Authenticated screenshot store missing")
 
     sources = {p: p.read_text(encoding="utf-8") for flavor in ("main", "dev", "stableDirect", "stablePlay", "stableFdroid")
                for p in (ROOT / "app/src" / flavor / "java").rglob("*.kt")}
