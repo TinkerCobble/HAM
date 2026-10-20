@@ -8,36 +8,57 @@ on:
   schedule:
     - cron: '37 13 * * 1'
   workflow_dispatch:
-    inputs:
-      release_gate:
-        description: 'Require live public policy and terms pages'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 jobs:
-  source-privacy:
-    runs-on: ubuntu-latest
+  history-secrets:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-      - name: Scan full Git history for secrets
+      - name: Install verified Gitleaks v8.30.1
+        shell: bash
         run: |
-          go install github.com/gitleaks/gitleaks/v8@v8.30.1
-          "$(go env GOPATH)/bin/gitleaks" git --redact --no-banner .
-      - uses: actions/setup-python@v7
+          set -euo pipefail
+          archive="gitleaks_8.30.1_linux_x64.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/${archive}" -o "${archive}"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  ${archive}" | sha256sum --check --status
+          mkdir -p "$RUNNER_TEMP/ham-gitleaks"
+          tar -xzf "${archive}" -C "$RUNNER_TEMP/ham-gitleaks" gitleaks
+          test "$("$RUNNER_TEMP/ham-gitleaks/gitleaks" version)" = "8.30.1"
+      - name: Scan all reachable branches and tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-list --all --count)" -gt 0
+          "$RUNNER_TEMP/ham-gitleaks/gitleaks" git --redact --no-banner --log-opts="--all" .
+          "$RUNNER_TEMP/ham-gitleaks/gitleaks" dir --redact --no-banner .
+
+  source-privacy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
       - name: Check privacy-sensitive source and documentation
         run: python scripts/privacy_check.py
-      - name: Check live legal pages for weekly or release review
-        if: ${{ github.event_name == 'schedule' || inputs.release_gate == true }}
-        run: python scripts/privacy_check.py --public
+
+  published-artifacts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Check exact live APK, source archive, and HAM pages
+        run: python scripts/privacy_artifacts.py --public

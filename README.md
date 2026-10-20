@@ -13,6 +13,8 @@ Install JDK 21 and Android SDK platform 37, with an Android SDK accepted by the 
 python scripts/privacy_check.py
 ```
 
+The privacy workflow runs three independent jobs: Gitleaks against all reachable public Git history, source/privacy checks, and a byte-verified check of the currently published APK, matching source ZIP, HAM pages, stylesheet, checksum files, and DEV update feed. An installation error or failure in any job fails the workflow. Before publishing a *new* build, update `release/privacy-artifacts.json` with the candidate's verified URL and SHA-256, run `python scripts/privacy_artifacts.py --staged --apk <signed-apk> --source-zip <matching-source-zip> --website-dir <website-site-directory>` on the staged files, and review the app's actual data flow. Publish the APK and source first; advance the public update feed last, after the live bytes pass the same audit. The gate detects known patterns and cannot prove that all personal information is absent; see [privacy audit and release checklist](docs/PRIVACY_RELEASE_CHECKLIST.md).
+
 On macOS or Linux, use `./gradlew` and `python3`. The local debug APK is produced at `app/build/outputs/apk/dev/debug/app-dev-debug.apk`. It is signed with your local Android debug identity and **cannot update** the publicly distributed DEV app, which uses a separate permanent signer. Never uninstall the installed DEV app merely to test a locally built APK if its data matters.
 
 The `stableDirect`, `stablePlay`, and `stableFdroid` flavors share this source tree. They are development preparations; a build from them is not a released Stable product. Release APK signing uses private credentials that are deliberately absent. This source does not contain a Stable APK or update manifest.

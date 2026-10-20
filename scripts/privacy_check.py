@@ -4,6 +4,7 @@ import argparse
 import pathlib
 import re
 import sys
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -17,6 +18,42 @@ EXPECTED_LIBRARIES = {
     "androidx-compose-foundation", "androidx-compose-ui-tooling", "junit", "okhttp",
 }
 ALLOWED_HOSTS = {"tinkercobble.com", "your-home-assistant.example", "nominatim.openstreetmap.org"}
+PUBLIC_EMAILS = {"support@tinkercobble.com", "dev@tinkercobble.com", "secret@example.com"}
+SYNTHETIC_LOCAL_ADDRESS = "192.168.1.5"
+
+
+def check_public_literals() -> list[str]:
+    """Flag owner data in source without printing a matched value."""
+    if (ROOT / ".git").exists():
+        tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout
+        paths = [ROOT / item.decode("utf-8") for item in tracked.split(b"\0") if item]
+    else:  # Published source ZIPs deliberately contain no Git history.
+        paths = [ROOT / "README.md"]
+        for directory in ("app/src", "docs", "home-assistant", "scripts", "release"):
+            paths.extend((ROOT / directory).rglob("*"))
+    if not paths:
+        return ["No source files were checked for private literals"]
+    errors = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in {".kt", ".py", ".md", ".json", ".xml", ".toml", ".kts", ".yml", ".yaml", ".html", ".properties"}:
+            continue
+        if "third_party_licenses" in path.parts:
+            continue  # Upstream copyright contacts are reviewed separately, not owner data.
+        data = path.read_text(encoding="utf-8", errors="replace")
+        label = path.relative_to(ROOT)
+        if re.search(r"[A-Za-z]:[\\/]Users[\\/]", data):
+            errors.append(f"Possible local user path in {label} (value withheld)")
+        for address in re.findall(r"(?<!\d)(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?!\d)", data):
+            if address != SYNTHETIC_LOCAL_ADDRESS:
+                errors.append(f"Possible private network address in {label} (value withheld)")
+                break
+        for email in re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", data):
+            if email.lower() not in PUBLIC_EMAILS:
+                errors.append(f"Unexpected email in {label} (value withheld)")
+                break
+    return errors
 
 
 def check() -> list[str]:
@@ -82,6 +119,7 @@ def check() -> list[str]:
     }.items():
         if not okay:
             errors.append(f"Missing or changed {label}; review before release")
+    errors.extend(check_public_literals())
     return errors
 
 

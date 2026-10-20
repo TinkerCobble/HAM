@@ -1,0 +1,8 @@
+{
+  "apk_url": "https://tinkercobble.com/downloads/ham/ham-0.1.12-dev-code13.apk",
+  "apk_sha256": "8387aa30d07d7822f6a701fc1557a69712b8784c6fbe3e5ffaab9dc781ec58cd",
+  "source_url": "https://tinkercobble.com/downloads/ham/ham-0.1.12-dev-code13-source.zip",
+  "source_sha256": "521b01506da4d283398512f7f1eb89a607632bc13badad0c54ebc4251f14c2d3",
+  "version_code": 13,
+  "package": "com.tinkercobble.ham.dev"
+}
