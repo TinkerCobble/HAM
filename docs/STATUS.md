@@ -1,5 +1,7 @@
 # Public HAM status — 2026-10-29
 
+Canonical 0.3.8/code124 public distribution is live. Separate public source commit `a3958f9` passed clean build, 156 JVM tests, lint, source privacy, Gitleaks current/history and GitHub privacy CI. The exact audited source ZIP SHA-256 is `F911124ACC6D096D3C0C5BB80F2F69C70ED10CA635F7154BC90AD274DCA7EEC9`. The signed APK SHA-256 `00BA5D75CD4DB0FCEE4C37155910C5FC0D0451793078CF9F686EC289D8975276` matched the Note8 candidate and anonymous live `https://tinkercobble.com/downloads/ham/ham-0.3.8-code124.apk`; its downloaded package/version/signer were verified. Website commit `a97b35f` deployed through Pages preview `86cba304`. Old code121/DEV routes remain. Pixel 8 installation, canonical update feed and full feature acceptance remain open. The candidate note below is historical pre-promotion status.
+
 ## Canonical 0.3.8/code124 source candidate
 
 This separate public repository stages the standalone canonical `com.tinkercobble.ham` source for the owner-approved 0.3.8/code124 website release. It contains no private development Git history or signing material. The private Note8-installed signed APK has SHA-256 `00BA5D75CD4DB0FCEE4C37155910C5FC0D0451793078CF9F686EC289D8975276`. A clean public-source unsigned release build passed; every APK ZIP member matched the private unsigned candidate except build-generated `META-INF/version-control-info.textproto`. Public-source privacy and Gitleaks current/history checks passed locally. Exact source-archive and live website checks remain before distribution is complete.

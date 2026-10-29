@@ -1,5 +1,13 @@
 # Public HAM — Chat and Codex handoff
 
+## Latest session — 2026-10-29, canonical code124 source publication
+
+- **Repository/branch:** standalone public `TinkerCobble/HAM` `main` commit `a3958f9`, pushed and remote-read back. Private development Git history was not imported. The private HAM and website repositories were independently confirmed private before release.
+- **Changed:** copied audited canonical 0.3.8/code124 app source and matching build files into this existing separate public repository; removed obsolete public DEV flavor source, kept historical release artifacts/tooling, and updated source/privacy documentation. Public unsigned release APK matched private candidate ZIP members except generated version-control metadata.
+- **Verified:** clean release build, 156 JVM tests, debug lint, source privacy, Gitleaks current/history, exact source ZIP and signed APK scans passed. GitHub Actions privacy workflow on `a3958f9` completed successfully. Public source ZIP SHA-256 `F911124ACC6D096D3C0C5BB80F2F69C70ED10CA635F7154BC90AD274DCA7EEC9`; signed APK SHA-256 `00BA5D75CD4DB0FCEE4C37155910C5FC0D0451793078CF9F686EC289D8975276` matched anonymous live bytes.
+- **Release:** source ZIP and signed APK are live from the HAM product page; website commit `a97b35f`, Pages preview `86cba304`. Pixel 8 and canonical update-feed acceptance remain open; broader feature/provider acceptance stays in the private matrix.
+- **Recovery:** prechange complete public Git bundle is `Z:\TinkerCobble\HAM\pre-code124-public-source-20261029.bundle`; previous code121 public objects remain available. No real calendar data, account, token, private URL, device identifier, signing material or private Git history was included.
+
 ## Current session — 2026-10-29, canonical code124 source preparation
 
 - **Repository:** `TinkerCobble/HAM` is public with separate history from private `DolinaJean/HAM`. The website repository `DolinaJean/TinkerCobbleWebsite` is private. No private Git history was merged here.
