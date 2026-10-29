@@ -1,5 +1,11 @@
 # Public HAM — Chat and Codex handoff
 
+## Current session — 2026-10-29, code130 conditional self-update
+
+- **Source:** standalone audited public tree includes canonical code130 automatic-update implementation, without private Git history. It adds background unmetered feed checks, exact APK verification, conditional Android 12+ PackageInstaller self-update, Settings opt-out and foreground approval fallback. Android 9 retains the existing interactive update path.
+- **Device gate:** Note8 accepted the exact signed 0.3.14/code130 APK as a same-package/signer in-place update over code129, retaining first-install time and the old `.dev` package. Pixel 8 is on private code129 with install-source allowance; a published higher-code feed is needed to test the real background self-install. No silent-install acceptance is claimed yet.
+- **Privacy:** only generic source, synthetic tests and public release metadata belong here. Run privacy/Gitleaks, full build/lint, unsigned parity, public CI and exact public artifact read-back before calling this source published. Keep the older code127 feed until the new APK and source are live and verified.
+
 ## Latest session — 2026-10-29, physical Pixel 8 code125 acceptance
 
 - **Diagnosis/action:** the actual Pixel 8's public code124 APK reproduced the same permission-denied Calendar Provider observer crash as the emulator. The same-signer, higher-code public code125 APK installed over canonical HAM without uninstall or data clear.

@@ -3,12 +3,15 @@ package com.tinkercobble.ham.updates
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.app.PendingIntent
 import android.content.pm.PackageInfo
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import androidx.annotation.RequiresApi
 import com.tinkercobble.ham.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -21,7 +24,7 @@ import java.net.URL
 import java.security.MessageDigest
 import javax.net.ssl.HttpsURLConnection
 
-/** User-approved updater for the single HAM package. */
+/** Signed single-package updater; Android decides whether a self-update needs user action. */
 object UpdateService {
     private const val MAX_MANIFEST = 16_384
     private const val MAX_APK = 100L * 1024L * 1024L
@@ -134,8 +137,10 @@ object UpdateService {
                 } finally {
                     connection.disconnect()
                 }
-                verifyPackage(context, temporary, update)
+                // Keep the final filename stable for package verification and either
+                // Android installation path after the SHA-256 check has passed.
                 require(temporary.renameTo(target)) { "Could not save the verified update." }
+                verifyPackage(context, target, update)
                 withContext(Dispatchers.Main) { onProgress(100) }
                 target
             } catch (error: Exception) {
@@ -146,6 +151,42 @@ object UpdateService {
         }
 
     fun canInstall(context: Context): Boolean = context.packageManager.canRequestPackageInstalls()
+
+    /** Hand a checksum, package and signer verified APK to Android's self-update API. */
+    @RequiresApi(31)
+    fun commitSelfUpdate(context: Context, file: File, update: AvailableUpdate) {
+        require(Build.VERSION.SDK_INT >= 31 && canInstall(context)) { "Automatic installation is unavailable." }
+        val folder = File(context.cacheDir, "updates").canonicalFile
+        require(file.canonicalFile.parentFile == folder && file.name == APK_NAME && file.isFile) {
+            "The verified update file is missing."
+        }
+        verifyPackage(context, file, update)
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+            setAppPackageName(context.packageName)
+            setSize(file.length())
+            setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+        }
+        val sessionId = installer.createSession(params)
+        try {
+            installer.openSession(sessionId).use { session ->
+                session.openWrite("base.apk", 0, file.length()).use { output ->
+                    file.inputStream().use { input -> input.copyTo(output) }
+                    session.fsync(output)
+                }
+                val callback = Intent(context, UpdateInstallReceiver::class.java).apply {
+                    putExtra(UpdateInstallReceiver.EXTRA_SESSION, sessionId)
+                    putExtra(UpdateInstallReceiver.EXTRA_VERSION, update.versionCode)
+                }
+                val receiver = PendingIntent.getBroadcast(context, sessionId, callback,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+                session.commit(receiver.intentSender)
+            }
+        } catch (error: Exception) {
+            runCatching { installer.abandonSession(sessionId) }
+            throw error
+        }
+    }
 
     fun permissionIntent(context: Context): Intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
         Uri.parse("package:${context.packageName}"))

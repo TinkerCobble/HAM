@@ -143,6 +143,7 @@ import com.tinkercobble.ham.ui.HamTheme
 import com.tinkercobble.ham.ui.LocalBackupPage
 import com.tinkercobble.ham.updates.AvailableUpdate
 import com.tinkercobble.ham.updates.UpdateService
+import com.tinkercobble.ham.updates.AutoUpdateScheduler
 import com.tinkercobble.ham.updates.UpdateSessionGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -185,6 +186,15 @@ class MainActivity : ComponentActivity() {
             }
             HamTheme { HamApp(model, sharedScreenshot) { sharedScreenshot = null } }
         }
+    }
+    override fun onStart() {
+        super.onStart()
+        AutoUpdateScheduler.foreground(this)
+        AutoUpdateScheduler.schedule(this)
+    }
+    override fun onStop() {
+        AutoUpdateScheduler.background(this)
+        super.onStop()
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -339,8 +349,12 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
                 val result = UpdateService.check(context, manual = false)
                 result.update?.let {
                     if (updateSession.shouldPrompt(it.versionCode, BuildConfig.VERSION_CODE, manual = false)) {
-                        availableUpdate = it
-                        showUpdatePrompt = true
+                        if (AutoUpdateScheduler.canTrySilently(context, it.versionCode)) {
+                            AutoUpdateScheduler.schedule(context)
+                        } else {
+                            availableUpdate = it
+                            showUpdatePrompt = true
+                        }
                     }
                 }
             }
@@ -2172,6 +2186,7 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
     var error by remember { mutableStateOf("") }
     var updateMessage by remember { mutableStateOf("") }
     var checkingUpdate by remember { mutableStateOf(false) }
+    var autoInstallUpdates by remember { mutableStateOf(AutoUpdateScheduler.isEnabled(context)) }
     var privacyOpen by remember { mutableStateOf(false) }
     var backupOpen by remember { mutableStateOf(false) }
     var manageOpen by remember { mutableStateOf(false) }
@@ -2519,6 +2534,22 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
     if (!model.connected.value) TextButton(onClick = { privacyOpen = true }) { Text("Privacy & Connection") }
     HorizontalDivider(Modifier.padding(vertical = 8.dp))
     Text("Updates", style = MaterialTheme.typography.titleMedium)
+    if (android.os.Build.VERSION.SDK_INT >= 31) {
+        Row(verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Install verified updates automatically on Wi-Fi", modifier = Modifier.weight(1f))
+            Switch(checked = autoInstallUpdates, onCheckedChange = {
+                autoInstallUpdates = it
+                AutoUpdateScheduler.setEnabled(context, it)
+            })
+        }
+        Text("HAM installs when it is in the background. Android may still ask for approval. " +
+            "Automatic installation needs Allow from this source enabled for HAM.",
+            style = MaterialTheme.typography.bodySmall)
+    } else {
+        Text("HAM checks for updates automatically. This Android version requires approval to install them.",
+            style = MaterialTheme.typography.bodySmall)
+    }
     OutlinedButton(onClick = {
         checkingUpdate = true
         updateMessage = ""

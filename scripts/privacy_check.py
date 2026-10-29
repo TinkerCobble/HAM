@@ -11,7 +11,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 APP = ROOT / "app/src/main"
 EXPECTED_PERMISSIONS = {
     "android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE",
-    "android.permission.REQUEST_INSTALL_PACKAGES", "com.tinkercobble.ham.legacy.MIGRATE",
+    "android.permission.REQUEST_INSTALL_PACKAGES", "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION",
+    "com.tinkercobble.ham.legacy.MIGRATE",
     "android.permission.READ_CALENDAR", "android.permission.WRITE_CALENDAR",
     "android.permission.POST_NOTIFICATIONS", "android.permission.SCHEDULE_EXACT_ALARM",
     "android.permission.RECEIVE_BOOT_COMPLETED",
@@ -43,6 +44,9 @@ def check() -> list[str]:
         if not re.search(r'<receiver\s+android:name="\.' + receiver +
                          r'"\s+android:exported="false"', manifest):
             errors.append(f"Local reminder receiver exposure changed: {receiver}")
+    if not re.search(r'<receiver\s+android:name="\.updates\.UpdateInstallReceiver"\s+'
+                     r'android:exported="false"', manifest):
+        errors.append("Automatic update result receiver exposure changed")
 
     if 'androidx.core.content.FileProvider' not in manifest or 'android:exported="false"' not in manifest:
         errors.append("Private update FileProvider missing from canonical manifest")
