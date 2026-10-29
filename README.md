@@ -4,9 +4,9 @@ HAM is a native Android agenda for calendars the user chooses to connect. Home A
 
 ## Public release
 
-HAM 0.3.8 (versionCode 124) is the current canonical Android package, `com.tinkercobble.ham`. The exact signed APK is distributed at [TinkerCobble's HAM page](https://tinkercobble.com/ham/) with an immutable matching source archive. This public repository contains the audited standalone source snapshot; private development Git history and signing material are not included. The older `.dev` package is separate and remains available only for migration compatibility.
+This repository contains the canonical HAM 0.3.9 (versionCode 125) source for `com.tinkercobble.ham`. The signed APK and matching source archive are distributed from [TinkerCobble's HAM page](https://tinkercobble.com/ham/) after release checks. This public repository contains an audited standalone source snapshot; private development Git history and signing material are not included. The older `.dev` package is separate and remains available only for migration compatibility.
 
-Code124 was installed over the existing canonical app on a Note8 with the established signer and its data preserved. Disposable iCloud tests verified timed event location and description edits, server read-back, and one stale-version conflict. HAM remains in active development; see [status](docs/STATUS.md) and the public release notes. A public download does not claim full provider or feature acceptance.
+Code125 was installed over the existing canonical app on a Note8 with the established signer and its data preserved. It fixes an Android 16 launch crash when Calendar Provider permission has not yet been granted. Disposable iCloud tests on the preceding code124 verified timed event location and description edits, server read-back, and one stale-version conflict. HAM remains in active development; see [status](docs/STATUS.md) and the public release notes. A public download does not claim full provider or feature acceptance.
 
 ## Build
 

@@ -1,5 +1,11 @@
 # Public HAM — Chat and Codex handoff
 
+## Latest session — 2026-10-29, code125 Android 16 startup repair source
+
+- **Cause/change:** exact public code124 reproduced a permission-denied startup crash on a clean Android 16 Pixel 8 emulator. Canonical 0.3.9/code125 guards Calendar Provider observer registration until `READ_CALENDAR` is held and Android calendars are enabled; no permission, account, storage or network path was added.
+- **Source:** only `MainActivity.kt` and `app/build.gradle.kts` changed from the audited code124 app source; private development Git history and signing material remain separate. The public code124 website download is still live while this source candidate is audited.
+- **Verification:** private clean JVM suite/lint/release build and focused foreground observer instrumentation passed; exact signed code125 hash is `8FA775776360CE195CA232EECC41A2C5C84D50F35E7DF4253DCFEFFBC610467E`. Clean Android 16 launch, grant and revocation/restart passed. Code125 installed in place on Note8 with original first-install time, old `.dev`, Connected HA state and exact device APK hash preserved. Public-source clean build, scan, source ZIP, website release and real Pixel 8 checks follow.
+
 ## Latest session — 2026-10-29, canonical code124 source publication
 
 - **Repository/branch:** standalone public `TinkerCobble/HAM` `main` commit `a3958f9`, pushed and remote-read back. Private development Git history was not imported. The private HAM and website repositories were independently confirmed private before release.

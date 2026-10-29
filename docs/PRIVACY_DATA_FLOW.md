@@ -1,5 +1,7 @@
 # HAM data flow in the canonical source
 
+Code125 permission handling: the foreground Android Calendar Provider observer starts only after Android calendars are enabled and the app has current `READ_CALENDAR` permission. A permission-race denial leaves the observer unregistered. No new permission, account flow, endpoint, stored field or third-party transfer is introduced.
+
 HAM is a native Android application. It calls the Home Assistant server, Android Calendar Provider, and calendar services that the user connects. Calendar providers own their records. HAM has no TinkerCobble account, analytics, advertising, AI scheduling service, or hosted calendar backend.
 
 Home Assistant authorization runs through its own sign-in and consent screen. HAM receives the Android callback and stores access and refresh tokens in Keystore-protected app-private storage. The public HAM website is the OAuth client identity and software download site; it does not receive authorization codes or calendar records. The app supports a compatibility sign-in when a Home Assistant server does not advertise PKCE S256. It uses PKCE S256 when supported. Home Assistant tokens may authorize more than calendar access; HAM does not describe them as calendar-only.

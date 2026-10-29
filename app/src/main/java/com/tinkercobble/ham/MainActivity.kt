@@ -286,14 +286,22 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
             }
         }
     }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(model.androidEnabled.value, model.androidPermissionGranted.value) {
         activity.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (!model.androidEnabled.value || !AndroidCalendarProvider(activity).canRead())
+                return@repeatOnLifecycle
             val changes = Channel<Unit>(Channel.CONFLATED)
             val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
                 override fun onChange(selfChange: Boolean) { changes.trySend(Unit) }
             }
-            activity.contentResolver.registerContentObserver(
-                CalendarContract.Events.CONTENT_URI, true, observer)
+            try {
+                activity.contentResolver.registerContentObserver(
+                    CalendarContract.Events.CONTENT_URI, true, observer)
+            } catch (_: SecurityException) {
+                // Permission can be revoked between the check and registration.
+                changes.close()
+                return@repeatOnLifecycle
+            }
             try {
                 var lastObservedRefresh = 0L
                 for (change in changes) {
