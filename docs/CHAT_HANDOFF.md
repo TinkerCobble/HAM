@@ -1,5 +1,10 @@
 # Public HAM — Chat and Codex handoff
 
+## Code131 physical Pixel update acceptance — 2026-10-29
+
+- **Observed:** with HAM backgrounded on unmetered Wi-Fi, its scheduled worker found the live code131 feed and initiated Android installation. Pixel required owner Play Protect Scan app and Install app taps. Android records HAM as installer; installed code131 SHA-256 `EBB67BA83ED1028BB9054B24CB0DB65B0148DC7627FA34392377DA90E1523EF6`, signer and unchanged first-install time matched Note8/staging/live. HAM process ran afterward with no bounded fresh fatal marker.
+- **Scope:** automatic detection/download and HAM-initiated approval-based installation passed on Pixel; no-tap installation did not. A release-signed Android 16 emulator separately demonstrated no-prompt code129-to-code130 self-update. Android may require approval on future devices/updates. Keep conditional product wording and the manual fallback. Wider provider and scheduling acceptance remains open.
+
 ## Code131 public release — 2026-10-29
 
 - **Accepted release:** exact signed 0.3.15/code131 APK SHA-256 `EBB67BA83ED1028BB9054B24CB0DB65B0148DC7627FA34392377DA90E1523EF6` passed Note8-first in-place package/signer/data/Home Assistant acceptance; matching separate audited source ZIP SHA-256 `043370C8EECB12E66AED66BB23EEF375A8ECB242FA568427A8F876ED00C25BCC` and APK are anonymously live with staged/R2/live hash equality.
