@@ -1,5 +1,11 @@
 # Public HAM — Chat and Codex handoff
 
+## Code131 public release — 2026-10-29
+
+- **Accepted release:** exact signed 0.3.15/code131 APK SHA-256 `EBB67BA83ED1028BB9054B24CB0DB65B0148DC7627FA34392377DA90E1523EF6` passed Note8-first in-place package/signer/data/Home Assistant acceptance; matching separate audited source ZIP SHA-256 `043370C8EECB12E66AED66BB23EEF375A8ECB242FA568427A8F876ED00C25BCC` and APK are anonymously live with staged/R2/live hash equality.
+- **Source and feed:** this public source at `a37cb02` passed 160 JVM tests, build/lint, privacy/Gitleaks, unsigned APK member parity except generated VCS metadata and GitHub CI. Website content `2e8216c` and feed-last `d0224d2` deployed; live feed code/hash/URL/no-cache read-back passed.
+- **Open physical gate:** Pixel code130 is waiting for its natural background code131 check. The owner enabled background usage and left HAM backgrounded, but unattended physical installation is not accepted until code131 exact installed bytes and data retention are observed without manual approval. Full provider/feature completion remains open.
+
 ## Code131 source candidate — 2026-10-29
 
 - **Change:** replace the self-updater's persisted foreground flag/one-hour expiry with process-local activity state. A long-visible calendar no longer becomes eligible for a background install merely because an hour passed; process death cannot leave a stale persistent foreground state.
