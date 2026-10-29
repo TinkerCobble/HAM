@@ -20,7 +20,7 @@ class ScreenshotExtractionTest {
         val result = ScreenshotExtraction.parse("Book Fair\nExample School\n11/10/26")
         assertEquals("Example School", result.venue)
         assertEquals("", result.address)
-        assertTrue(result.warnings.any { it.contains("unverified") })
+        assertFalse(result.warnings.any { it.contains("unverified") })
     }
 
     @Test fun addressAcrossTwoLinesKeepsCityStateAndZip() {
@@ -48,5 +48,14 @@ class ScreenshotExtractionTest {
         assertTrue(result.dates.isEmpty())
         assertNull(result.end)
         assertTrue(result.warnings.any { it.contains("no year") })
+    }
+
+    @Test fun sentenceAboutSchoolIsNotVenueAndSingleTimeHasNoExtractedEnd() {
+        val result = ScreenshotExtraction.parse("Safety Patrol Meeting\nNovember 4, 2026\nOctober 2, 2026\n3:30 PM\nA good School Safety Patrol is always on the job! Make")
+        assertEquals("", result.venue)
+        assertEquals(LocalTime.of(15, 30), result.start)
+        assertNull(result.end)
+        assertEquals(2, result.dates.size)
+        assertTrue(result.description.contains("always on the job"))
     }
 }

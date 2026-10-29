@@ -18,6 +18,8 @@ data class ScreenshotDraft(
     val allDay: Boolean, val venue: String, val address: String, val description: String,
     val calendarId: String?, val attachmentId: String?, val writeAttempted: Boolean = false,
     val dateChoices: List<String> = emptyList(), val savedDates: List<String> = emptyList(),
+    val suggestedEnd: Boolean = false,
+    val originalText: String = "",
 )
 
 /** One private, encrypted unsent draft. Its image stays in the app's private files directory. */
@@ -47,7 +49,9 @@ class ScreenshotDraftStore(private val context: Context) {
             .put("venue", draft.venue).put("address", draft.address).put("description", draft.description)
             .put("calendar", draft.calendarId).put("attachment", draft.attachmentId)
             .put("write_attempted", draft.writeAttempted).put("date_choices", JSONArray(draft.dateChoices))
-            .put("saved_dates", JSONArray(draft.savedDates)).toString()
+            .put("saved_dates", JSONArray(draft.savedDates))
+            .put("suggested_end", draft.suggestedEnd)
+            .put("original_text", draft.originalText).toString()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encoded = Base64.encodeToString(cipher.iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
@@ -69,7 +73,8 @@ class ScreenshotDraftStore(private val context: Context) {
             value.optString("venue"), value.optString("address"), value.optString("description"),
             if (value.isNull("calendar")) null else value.optString("calendar").ifBlank { null },
             if (value.isNull("attachment")) null else value.optString("attachment").ifBlank { null },
-            value.optBoolean("write_attempted"), strings("date_choices"), strings("saved_dates"))
+            value.optBoolean("write_attempted"), strings("date_choices"), strings("saved_dates"),
+            value.optBoolean("suggested_end"), value.optString("original_text"))
             .takeIf { image(it) != null }
     } catch (_: Exception) { null }
 

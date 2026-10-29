@@ -21,6 +21,7 @@ object ScreenshotExtraction {
     private val namedDate = Regex("\\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday,?\\s+)?(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{1,2})(?:,?\\s+(20\\d{2}))?\\b", RegexOption.IGNORE_CASE)
     private val numericDate = Regex("\\b(0?[1-9]|1[0-2])/(0?[1-9]|[12]\\d|3[01])/(20\\d{2}|\\d{2})\\b")
     private val timeRange = Regex("\\b(1[0-2]|0?[1-9]):?([0-5]\\d)?\\s*(AM|PM)?\\s*[-–—to]+\\s*(1[0-2]|0?[1-9]):?([0-5]\\d)?\\s*(AM|PM)\\b", RegexOption.IGNORE_CASE)
+    private val singleTime = Regex("\\b(1[0-2]|0?[1-9])(?::([0-5]\\d))?\\s*(AM|PM)\\b", RegexOption.IGNORE_CASE)
     private val street = Regex("\\b\\d{1,6}\\s+[\\w .'-]+\\s+(?:Street|St|Road|Rd|Avenue|Ave|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Square|Sq)\\.?\\b(?:[^\\n]{0,70})?", RegexOption.IGNORE_CASE)
     private val cityState = Regex("^[\\p{L} .'-]+,?\\s+[A-Z]{2}\\s+\\d{5}(?:-\\d{4})?$", RegexOption.IGNORE_CASE)
 
@@ -48,9 +49,11 @@ object ScreenshotExtraction {
         }
         val suffix = range?.groupValues?.get(6).orEmpty()
         val firstSuffix = range?.groupValues?.get(3)?.ifBlank { suffix }.orEmpty()
-        val start = if (range != null) clock(range.groupValues[1], range.groupValues[2], firstSuffix) else null
+        val alone = if (range == null) singleTime.find(text) else null
+        val start = if (range != null) clock(range.groupValues[1], range.groupValues[2], firstSuffix)
+            else alone?.let { clock(it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
         val end = if (range != null) clock(range.groupValues[4], range.groupValues[5], suffix) else null
-        if (range == null) warnings += "No complete time range found. Choose all-day or enter both times."
+        if (range == null && start == null) warnings += "No time found. Choose a time or all-day."
         if (dates.isEmpty()) warnings += "No unambiguous date with a year found. Enter the date."
         val addresses = lines.mapIndexedNotNull { index, line ->
             street.find(line)?.value?.let { found ->
@@ -62,8 +65,12 @@ object ScreenshotExtraction {
         val title = lines.firstOrNull { line -> line.length in 4..100 &&
             !namedDate.containsMatchIn(line) && !numericDate.containsMatchIn(line) &&
             !street.containsMatchIn(line) && !line.startsWith("http", true) }.orEmpty()
-        val venue = lines.firstOrNull { it.contains(Regex("school|center|centre|library|club|hall|arena|church", RegexOption.IGNORE_CASE)) }.orEmpty()
-        if (venue.isNotBlank() && addresses.isEmpty()) warnings += "Venue address is unverified."
+        val venueWords = Regex("\\b(school|center|centre|library|club|hall|arena|church)\\b", RegexOption.IGNORE_CASE)
+        val sentenceWords = Regex("\\b(is|are|was|will|always|please|bring|join|make|your|the)\\b", RegexOption.IGNORE_CASE)
+        val venue = lines.firstOrNull { line -> line != title && line.length in 4..70 &&
+            venueWords.containsMatchIn(line) && !sentenceWords.containsMatchIn(line) &&
+            !line.contains('!') && !line.contains('.') && !namedDate.containsMatchIn(line) &&
+            !street.containsMatchIn(line) }.orEmpty()
         return ScreenshotSuggestion(title, dates.distinct(), start, end, venue, addresses.firstOrNull().orEmpty(),
             text.trim(), warnings.distinct())
     }

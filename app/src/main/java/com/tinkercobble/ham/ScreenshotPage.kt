@@ -19,6 +19,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -27,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -36,7 +38,8 @@ import com.tinkercobble.ham.data.ScreenshotOcr
 import com.tinkercobble.ham.data.ScreenshotDraft
 import com.tinkercobble.ham.data.ScreenshotDraftStore
 import com.tinkercobble.ham.data.VenueCandidate
-import com.tinkercobble.ham.data.VenueLookup
+import com.tinkercobble.ham.data.EventEntryTime
+import com.tinkercobble.ham.data.AddressVerification
 import com.tinkercobble.ham.ui.HamViewModel
 import kotlinx.coroutines.launch
 import java.io.File
@@ -57,13 +60,22 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
     var date by remember(uri) { mutableStateOf("") }
     var dateChoices by remember(uri) { mutableStateOf<List<LocalDate>>(emptyList()) }
     var savedDates by remember(uri) { mutableStateOf<List<String>>(emptyList()) }
+    var dateConfirmed by remember(uri) { mutableStateOf(false) }
+    var suggestedEnd by remember(uri) { mutableStateOf(false) }
+    var defaultMinutes by remember { mutableStateOf(EventEntryPreferences.defaultMinutes(context)) }
     var allDay by remember(uri) { mutableStateOf(false) }
     var start by remember(uri) { mutableStateOf("") }
     var end by remember(uri) { mutableStateOf("") }
     var venue by remember(uri) { mutableStateOf("") }
     var address by remember(uri) { mutableStateOf("") }
+    var locationOpen by remember(uri) { mutableStateOf(false) }
     var addressVerified by remember(uri) { mutableStateOf(false) }
+    val lookupPrefs = remember(context) { context.getSharedPreferences("ham-address-lookup", 0) }
+    var lookupOptIn by remember { mutableStateOf(lookupPrefs.getBoolean("enabled", false)) }
+    var lookupRequest by remember { mutableStateOf("") }
     var description by remember(uri) { mutableStateOf("") }
+    var originalText by remember(uri) { mutableStateOf("") }
+    var descriptionOpen by remember(uri) { mutableStateOf(false) }
     var warnings by remember(uri) { mutableStateOf<List<String>>(emptyList()) }
     var candidates by remember { mutableStateOf<List<VenueCandidate>>(emptyList()) }
     var calendarId by remember(uri) { mutableStateOf<String?>(null) }
@@ -73,16 +85,30 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
     var duplicatePrompt by remember { mutableStateOf(false) }
     val selectedCalendar = model.selectedWritable(calendarId)
 
+    LaunchedEffect(lookupRequest, lookupOptIn) {
+        val query = lookupRequest
+        if (query.isBlank() || !lookupOptIn || !AddressVerification.complete(query)) return@LaunchedEffect
+        try {
+            val matches = AddressVerification.lookup(context, query)
+            if (lookupOptIn && address == query) candidates = matches
+        } catch (_: Exception) {
+            if (address == query) candidates = emptyList()
+        }
+    }
+
     LaunchedEffect(uri) {
         val draft = draftStore.load()
         if (draft != null) {
             image = draftStore.image(draft)
             title = draft.title; date = draft.date; start = draft.start; end = draft.end
             allDay = draft.allDay; venue = draft.venue; address = draft.address
+            locationOpen = draft.venue.isNotBlank() || draft.address.isNotBlank()
             description = draft.description; calendarId = draft.calendarId; attachmentId = draft.attachmentId
+            originalText = draft.originalText
             writeAttempted = draft.writeAttempted
             dateChoices = draft.dateChoices.mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }
             savedDates = draft.savedDates
+            suggestedEnd = draft.suggestedEnd
             ocrDone = true
             if (uri != null) error = "Your unsent draft was restored. Cancel it before importing a different image."
             return@LaunchedEffect
@@ -94,22 +120,26 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
         finally { working = false }
     }
 
-    LaunchedEffect(image, ocrDone, title, date, start, end, allDay, venue, address, description, calendarId, attachmentId, writeAttempted, dateChoices, savedDates) {
+    LaunchedEffect(image, ocrDone, title, date, start, end, allDay, venue, address, description, originalText, calendarId, attachmentId, writeAttempted, dateChoices, savedDates) {
         val file = image
         if (ocrDone && file != null && file.isFile) {
             draftStore.save(ScreenshotDraft(file.name, title, date, start, end, allDay,
                 venue, address, description, calendarId, attachmentId, writeAttempted,
-                dateChoices.map(LocalDate::toString), savedDates))
+                dateChoices.map(LocalDate::toString), savedDates, suggestedEnd, originalText))
         }
     }
 
     fun save(allowDuplicate: Boolean) {
         val file = image ?: return
         val day = runCatching { LocalDate.parse(date.trim()) }.getOrNull()
-        val begins = if (allDay) null else runCatching { LocalTime.parse(start.trim()) }.getOrNull()
-        val finishes = if (allDay) null else runCatching { LocalTime.parse(end.trim()) }.getOrNull()
+        val begins = if (allDay) null else EventEntryTime.parse(start)
+        val finishes = if (allDay) null else EventEntryTime.parse(end)
+        if (dateChoices.size > 1 && !dateConfirmed) {
+            error = "Choose the intended date before saving."
+            return
+        }
         if (day == null || title.isBlank() || (!allDay && (begins == null || finishes == null || !finishes.isAfter(begins)))) {
-            error = "Check the title, ISO date, and both times (HH:mm), or choose all-day."
+            error = "Check the title, date, and time range."
             return
         }
         val id = selectedCalendar?.id ?: run { error = "Choose a writable Home Assistant calendar"; return }
@@ -121,7 +151,7 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
                     attachmentId = it
                     draftStore.save(ScreenshotDraft(file.name, title, date, start, end, allDay,
                         venue, address, description, id, it, false,
-                        dateChoices.map(LocalDate::toString), savedDates), durable = true)
+                        dateChoices.map(LocalDate::toString), savedDates, suggestedEnd, originalText), durable = true)
                 }
                 require(client.screenshot(stored).contentEquals(file.readBytes())) {
                     "Stored screenshot read-back differs from the selected image"
@@ -130,7 +160,7 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
                 writeAttempted = true
                 draftStore.save(ScreenshotDraft(file.name, title, date, start, end, allDay,
                     venue, address, description, id, stored, true,
-                    dateChoices.map(LocalDate::toString), savedDates), durable = true)
+                    dateChoices.map(LocalDate::toString), savedDates, suggestedEnd, originalText), durable = true)
                 client.createScreenshotEvent(id, day, title, begins, finishes, location, description, stored, allowDuplicate)
                 model.setCalendarPreferences(model.calendarPreferences.value.used(id))
                 model.activeAgenda.value = "Calendar"
@@ -140,6 +170,7 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
                 val next = dateChoices.firstOrNull { it.toString() !in savedDates }
                 if (next != null) {
                     date = next.toString()
+                    dateConfirmed = false
                     error = "Saved on $day. Review the next date before saving another event."
                 } else {
                     draftStore.clear()
@@ -185,14 +216,17 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
                     try {
                         val suggestion = ScreenshotExtraction.parse(ScreenshotOcr.read(context, file))
                         title = suggestion.title
-                        dateChoices = suggestion.dates
-                        date = suggestion.dates.firstOrNull()?.toString().orEmpty()
+                        dateChoices = suggestion.dates.sortedWith(compareBy<LocalDate> { it.isBefore(LocalDate.now()) }.thenBy { it })
+                        date = dateChoices.firstOrNull()?.toString().orEmpty()
                         start = suggestion.start?.toString().orEmpty()
-                        end = suggestion.end?.toString().orEmpty()
+                        suggestedEnd = suggestion.start != null && suggestion.end == null
+                        end = (suggestion.end ?: suggestion.start?.let { EventEntryTime.suggestedEnd(it, defaultMinutes) })?.toString().orEmpty()
                         allDay = false
                         venue = suggestion.venue
                         address = suggestion.address
+                        locationOpen = venue.isNotBlank() || address.isNotBlank()
                         description = suggestion.description
+                        originalText = suggestion.description
                         warnings = suggestion.warnings
                         ocrDone = true
                     } catch (e: Exception) { error = e.message ?: "Could not read image" }
@@ -203,36 +237,69 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
             warnings.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             OutlinedTextField(title, { title = it }, label = { Text("Event title") }, modifier = Modifier.fillMaxWidth())
             if (dateChoices.size > 1) {
-                Text("Multiple dates found. Save one entry at a time; choose the intended date.")
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Multiple dates found. Choose the intended date before saving each event.")
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     dateChoices.filterNot { it.toString() in savedDates }.take(3).forEach { candidate ->
-                        TextButton(onClick = { date = candidate.toString() }) { Text(candidate.toString()) }
+                        TextButton(onClick = { date = candidate.toString(); dateConfirmed = true }) {
+                            Text((if (dateConfirmed && date == candidate.toString()) "Selected: " else "") + readableDate(candidate))
+                        }
                     }
                 }
             }
-            OutlinedTextField(date, { date = it }, label = { Text("Date (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
+            EventDateField(date, { date = it; dateConfirmed = true })
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { allDay = !allDay }) { Text(if (allDay) "All-day ✓" else "Make all-day") }
+                Text("All-day")
+                Switch(checked = allDay, onCheckedChange = { allDay = it })
             }
             if (!allDay) {
-                OutlinedTextField(start, { start = it }, label = { Text("Start HH:mm") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(end, { end = it }, label = { Text("End HH:mm") }, modifier = Modifier.fillMaxWidth())
-            }
-            OutlinedTextField(venue, { venue = it; addressVerified = false }, label = { Text("Venue") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(address, { address = it; addressVerified = false },
-                label = { Text(if (addressVerified) "Verified address" else "Address (unverified)") }, modifier = Modifier.fillMaxWidth())
-            Text("Address lookup sends only the venue/search words to OpenStreetMap Nominatim. © OpenStreetMap contributors.",
-                style = MaterialTheme.typography.bodySmall)
-            OutlinedButton(onClick = {
-                working = true
-                scope.launch {
-                    try { candidates = VenueLookup.search(listOf(venue, address).filter { it.isNotBlank() }.joinToString(" ")) }
-                    catch (e: Exception) { error = e.message ?: "Address search failed" }
-                    finally { working = false }
+                EventTimeField(start, { value ->
+                    start = value
+                    if (end.isBlank() || suggestedEnd) {
+                        end = EventEntryTime.parse(value)?.let { EventEntryTime.suggestedEnd(it, defaultMinutes) }?.toString().orEmpty()
+                        suggestedEnd = end.isNotBlank()
+                    }
+                }, "Starts", Modifier.fillMaxWidth())
+                EventTimeField(end, { end = it; suggestedEnd = false },
+                    if (suggestedEnd) "Ends (suggested: $defaultMinutes min)" else "Ends", Modifier.fillMaxWidth())
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    listOf(15, 30, 60, 120).forEach { minutes ->
+                        TextButton(onClick = {
+                            end = EventEntryTime.parse(start)?.let { EventEntryTime.suggestedEnd(it, minutes) }?.toString().orEmpty()
+                            suggestedEnd = end.isNotBlank()
+                        }) { Text(if (minutes == 60) "1 hour" else if (minutes == 120) "2 hours" else "$minutes min") }
+                    }
                 }
-            }, enabled = !working && (venue.length + address.length >= 4)) { Text("Verify address") }
+                TextButton(onClick = {
+                    defaultMinutes = listOf(15, 30, 60, 120).let { options ->
+                        options[(options.indexOf(defaultMinutes) + 1) % options.size]
+                    }
+                    EventEntryPreferences.setDefaultMinutes(context, defaultMinutes)
+                }) { Text("Default duration for new events: $defaultMinutes min · Change") }
+            }
+            TextButton(onClick = { locationOpen = !locationOpen }) {
+                Text(if (locationOpen) "Hide location" else "Add location (optional)")
+            }
+            if (locationOpen) {
+            OutlinedTextField(venue, { venue = it; addressVerified = false }, label = { Text("Venue (optional)") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(address, { address = it; addressVerified = false; candidates = emptyList() },
+                label = { Text(if (addressVerified) "Verified address" else "Street address (optional)") },
+                modifier = Modifier.fillMaxWidth().onFocusChanged { focus ->
+                    if (!focus.isFocused && lookupOptIn && AddressVerification.complete(address))
+                        lookupRequest = address
+                })
+            Row {
+                Switch(checked = lookupOptIn, onCheckedChange = {
+                    lookupOptIn = it
+                    lookupPrefs.edit().putBoolean("enabled", it).apply()
+                    if (it && AddressVerification.complete(address)) lookupRequest = address
+                    if (!it) candidates = emptyList()
+                })
+                Text("Verify completed addresses using Android's location service (may send the address to its provider)",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            if (addressVerified) Text("Address match chosen", style = MaterialTheme.typography.bodySmall)
             candidates.forEach { match ->
-                TextButton(onClick = { venue = match.name; address = match.address; addressVerified = true; candidates = emptyList() }) {
+                TextButton(onClick = { address = match.address; addressVerified = true; candidates = emptyList() }) {
                     Text(match.address)
                 }
             }
@@ -240,8 +307,15 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
                 val query = Uri.encode(address)
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=$query")))
             }) { Text("Maps") }
-            OutlinedTextField(description, { description = it }, label = { Text("Description and flyer details") },
+            }
+            TextButton(onClick = { descriptionOpen = !descriptionOpen }) {
+                Text(if (descriptionOpen) "Hide description and original text" else "Edit description and original text")
+            }
+            if (descriptionOpen) OutlinedTextField(description, { description = it },
+                label = { Text("Description and original extracted text") },
                 modifier = Modifier.fillMaxWidth(), minLines = 4)
+            if (descriptionOpen && originalText.isNotBlank()) Text("Original screenshot text (kept on this device for review):\n$originalText",
+                style = MaterialTheme.typography.bodySmall)
             Text("Screenshot: ${if (attachmentId == null) "ready to store securely on Save" else "stored in Home Assistant"}")
             Text("Destination calendar: ${selectedCalendar?.name ?: "Choose calendar"}")
             if (selectedCalendar != null) Text(selectedCalendar.id, style = MaterialTheme.typography.bodySmall)

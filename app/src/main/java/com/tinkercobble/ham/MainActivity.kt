@@ -56,6 +56,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
@@ -65,6 +66,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.contentDescription
@@ -125,6 +127,8 @@ import com.tinkercobble.ham.data.SchedulingConflicts
 import com.tinkercobble.ham.data.ConflictKind
 import com.tinkercobble.ham.data.EventTemplate
 import com.tinkercobble.ham.data.EventTemplateStore
+import com.tinkercobble.ham.data.QuickAddDraft
+import com.tinkercobble.ham.data.QuickAddDraftStore
 import com.tinkercobble.ham.data.LocalTask
 import com.tinkercobble.ham.data.LocalTaskStore
 import com.tinkercobble.ham.data.AndroidCalendarProvider
@@ -201,6 +205,13 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
     val activity = context as ComponentActivity
     val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf(if (model.hasAgendaSource) "Today" else "Settings") }
+    LaunchedEffect(model.message.value) {
+        val notice = model.message.value
+        if (notice == "Calendars updated" || notice == "Loaded information cleared") {
+            delay(2_500)
+            if (model.message.value == notice) model.message.value = ""
+        }
+    }
     var quickAddSlot by remember { mutableStateOf<Pair<String, String>?>(null) }
     var eventCopy by remember { mutableStateOf<EventCopyRequest?>(null) }
     var screenshotUri by remember { mutableStateOf<Uri?>(null) }
@@ -1525,6 +1536,7 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
     onScreenshot: () -> Unit, onResume: () -> Unit) {
     val context = LocalContext.current
     val templateStore = remember(context) { EventTemplateStore(context) }
+    val quickDraftStore = remember(context) { QuickAddDraftStore(context) }
     var templates by remember { mutableStateOf<List<EventTemplate>>(emptyList()) }
     var templateError by remember { mutableStateOf("") }
     LaunchedEffect(templateStore) {
@@ -1533,6 +1545,10 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
             .onFailure { templateError = "Could not read protected event templates on this device." }
     }
     val scope = rememberCoroutineScope()
+    val formScroll = rememberScrollState()
+    var toolsOpen by rememberSaveable { mutableStateOf(false) }
+    var locationOpen by rememberSaveable { mutableStateOf(false) }
+    var descriptionOpen by rememberSaveable { mutableStateOf(false) }
     var imported by remember { mutableStateOf<List<IcsImportDraft>?>(null) }
     var importIndex by remember { mutableStateOf(0) }
     var importError by remember { mutableStateOf("") }
@@ -1562,8 +1578,12 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
             }
         }
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(formScroll), verticalArrangement = Arrangement.spacedBy(6.dp)) {
     Text("Quick Add", style = MaterialTheme.typography.headlineMedium)
+    TextButton(onClick = { toolsOpen = !toolsOpen }) {
+        Text(if (toolsOpen) "Hide screenshot, import and templates" else "Screenshot, import or template")
+    }
+    if (toolsOpen) {
     OutlinedButton(onClick = onScreenshot) { Text("Add from Screenshot") }
     OutlinedButton(onClick = { importPicker.launch(arrayOf("*/*")) },
         enabled = !importing && !model.loading.value) {
@@ -1572,11 +1592,14 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
     if (importError.isNotBlank()) Text(importError, color = MaterialTheme.colorScheme.error)
     if (com.tinkercobble.ham.data.ScreenshotDraftStore(LocalContext.current).load() != null)
         TextButton(onClick = onResume) { Text("Resume screenshot draft") }
+    }
     Text("Create an event on a calendar you choose.", Modifier.padding(vertical = 8.dp))
-    DayPicker(model)
+    EventDateField(model.selectedDate.value.toString()) { chosen ->
+        runCatching { LocalDate.parse(chosen) }.getOrNull()?.let { model.selectedDate.value = it }
+    }
     val prefs = model.calendarPreferences.value
     // Keep the chosen ID through list refreshes; never substitute an entry with the same name.
-    var selectedId by remember(model.server.value, prefs.defaultId) { mutableStateOf(prefs.defaultId) }
+    var selectedId by rememberSaveable(model.server.value, prefs.defaultId) { mutableStateOf(prefs.defaultId) }
     LaunchedEffect(copyRequest?.id) {
         if (copyRequest != null) {
             imported = listOf(copyRequest.draft)
@@ -1591,16 +1614,49 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
     }
     val choice = model.selectedWritable(selectedId).takeIf { it?.id != copyOrigin?.first &&
         (moveSource == null || it?.provider == CalendarProviderKind.ANDROID) }
-    var title by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var location by remember { mutableStateOf("") }
-    var allDay by remember { mutableStateOf(true) }
-    var lastAllDayDateText by remember { mutableStateOf("") }
-    var repeatFrequency by remember { mutableStateOf<RepeatFrequency?>(null) }
-    var repeatCount by remember { mutableStateOf("4") }
-    var startTime by remember { mutableStateOf("09:00") }
-    var endTime by remember { mutableStateOf("10:00") }
+    var title by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+    var location by rememberSaveable { mutableStateOf("") }
+    var allDay by rememberSaveable { mutableStateOf(true) }
+    var lastAllDayDateText by rememberSaveable { mutableStateOf("") }
+    var repeatFrequency by rememberSaveable { mutableStateOf<RepeatFrequency?>(null) }
+    var repeatCount by rememberSaveable { mutableStateOf("4") }
+    var startTime by rememberSaveable { mutableStateOf("09:00") }
+    var endTime by rememberSaveable { mutableStateOf("10:00") }
+    var suggestedEnd by rememberSaveable { mutableStateOf(true) }
+    var defaultMinutes by remember { mutableStateOf(EventEntryPreferences.defaultMinutes(context)) }
+    var draftReady by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(quickDraftStore) {
+        if (draftReady) return@LaunchedEffect
+        val draft = withContext(Dispatchers.IO) { quickDraftStore.load() }
+        if (draft != null) {
+            title = draft.title; description = draft.description; location = draft.location
+            allDay = draft.allDay; startTime = draft.start; endTime = draft.end
+            lastAllDayDateText = draft.lastDay; selectedId = draft.calendarId
+            repeatFrequency = draft.repeatFrequency?.let { name ->
+                RepeatFrequency.entries.firstOrNull { it.name == name }
+            }
+            repeatCount = draft.repeatCount
+            runCatching { java.time.LocalDate.parse(draft.date) }.getOrNull()?.let {
+                model.selectedDate.value = it
+            }
+        }
+        draftReady = true
+    }
+    LaunchedEffect(draftReady, title, description, location, allDay, startTime, endTime,
+        lastAllDayDateText, selectedId, repeatFrequency, repeatCount, model.selectedDate.value) {
+        if (!draftReady) return@LaunchedEffect
+        delay(350)
+        withContext(Dispatchers.IO) {
+            if (title.isBlank() && description.isBlank() && location.isBlank() && allDay &&
+                repeatFrequency == null && lastAllDayDateText.isBlank()) quickDraftStore.clear()
+            else quickDraftStore.save(QuickAddDraft(title, description, location,
+                model.selectedDate.value.toString(), allDay, startTime, endTime,
+                lastAllDayDateText, selectedId, repeatFrequency?.name, repeatCount))
+        }
+    }
     var templatesOpen by remember { mutableStateOf(false) }
+    var advancedOpen by rememberSaveable { mutableStateOf(false) }
     var saveTemplateOpen by remember { mutableStateOf(false) }
     var templateName by remember { mutableStateOf("") }
     var deleteTemplateId by remember { mutableStateOf<String?>(null) }
@@ -1614,7 +1670,7 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
     }
     var chooser by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
-    OutlinedButton(onClick = { templatesOpen = true }, enabled = templates.isNotEmpty()) {
+    if (toolsOpen) OutlinedButton(onClick = { templatesOpen = true }, enabled = templates.isNotEmpty()) {
         Text("Use event template (${templates.size})")
     }
     if (templateError.isNotBlank()) Text(templateError, color = MaterialTheme.colorScheme.error)
@@ -1739,13 +1795,12 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
             dismissButton = { TextButton(onClick = { confirmImport = false }) { Text("Cancel") } })
     }
     OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Event title") }, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(value = location, onValueChange = { if (it.length <= 8_192) location = it },
-        label = { Text("Location (optional)") }, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(value = description, onValueChange = { if (it.length <= 65_536) description = it },
-        label = { Text("Description (optional)") }, modifier = Modifier.fillMaxWidth())
+    TextButton(onClick = { scope.launch { formScroll.animateScrollTo(formScroll.maxValue) } }) {
+        Text("Review and save event")
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = allDay, onCheckedChange = { allDay = it })
         Text("All-day event")
+        Switch(checked = allDay, onCheckedChange = { allDay = it })
     }
     if (allDay && repeatFrequency == null) {
         OutlinedTextField(lastAllDayDateText, { lastAllDayDateText = it },
@@ -1754,24 +1809,29 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         Text("For a multi-day event, choose its first day above and enter the last included day here.",
             style = MaterialTheme.typography.bodySmall)
     }
-    Text("Repeat", style = MaterialTheme.typography.labelMedium)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected = repeatFrequency == null, onClick = { repeatFrequency = null })
-        Text("Does not repeat")
-    }
-    RepeatFrequency.entries.forEach { frequency ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(selected = repeatFrequency == frequency,
-                onClick = { repeatFrequency = frequency })
-            Text(frequency.label)
-        }
+    TextButton(onClick = { advancedOpen = !advancedOpen }) {
+        Text(if (advancedOpen) "Hide repeat and advanced options" else "Repeat and advanced options")
     }
     val repeatSpec = repeatFrequency?.let { frequency ->
         repeatCount.toIntOrNull()?.let { count -> runCatching { RepeatSpec(frequency, count) }.getOrNull() }
     }
     val repeatSupported = choice?.provider == CalendarProviderKind.ANDROID ||
         choice?.provider == CalendarProviderKind.CALDAV
-    if (repeatFrequency != null) {
+    if (advancedOpen) {
+        Text("Repeat", style = MaterialTheme.typography.labelMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = repeatFrequency == null, onClick = { repeatFrequency = null })
+            Text("Does not repeat")
+        }
+        RepeatFrequency.entries.forEach { frequency ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = repeatFrequency == frequency,
+                    onClick = { repeatFrequency = frequency })
+                Text(frequency.label)
+            }
+        }
+    }
+    if (repeatFrequency != null && advancedOpen) {
         OutlinedTextField(repeatCount, { repeatCount = it }, label = { Text("Occurrences (2–52)") },
             singleLine = true)
         if (!repeatSupported)
@@ -1798,8 +1858,10 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     else if (!multiDaySupported) Text("Multi-day creation needs a writable calendar.",
         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    val normalizedStart = com.tinkercobble.ham.data.EventEntryTime.parse(startTime)?.toString().orEmpty()
+    val normalizedEnd = com.tinkercobble.ham.data.EventEntryTime.parse(endTime)?.toString().orEmpty()
     val timedValid = allDay || runCatching { com.tinkercobble.ham.data.TimedEventTime.parse(
-        model.selectedDate.value, startTime, endTime) }.isSuccess
+        model.selectedDate.value, normalizedStart, normalizedEnd) }.isSuccess
     val detailsValid = runCatching { com.tinkercobble.ham.data.EventDraftDetails.of(
         description, location) }.isSuccess
     OutlinedButton(onClick = { templateName = title.trim().take(80); saveTemplateOpen = true },
@@ -1825,16 +1887,47 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         }, enabled = templateName.isNotBlank() && templates.size < 20) { Text("Save") } },
         dismissButton = { TextButton(onClick = { saveTemplateOpen = false }) { Text("Cancel") } })
     if (!allDay) {
-        Text("Same-day times in 24-hour HH:mm format", style = MaterialTheme.typography.bodySmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(startTime, { startTime = it }, label = { Text("Start time") },
-                singleLine = true, modifier = Modifier.weight(1f))
-            OutlinedTextField(endTime, { endTime = it }, label = { Text("End time") },
-                singleLine = true, modifier = Modifier.weight(1f))
+        EventTimeField(startTime, { value ->
+            startTime = value
+            if (suggestedEnd) {
+                endTime = com.tinkercobble.ham.data.EventEntryTime.parse(value)?.let {
+                    com.tinkercobble.ham.data.EventEntryTime.suggestedEnd(it, defaultMinutes)
+                }?.toString().orEmpty()
+            }
+        }, "Starts", Modifier.fillMaxWidth())
+        EventTimeField(endTime, { endTime = it; suggestedEnd = false },
+            if (suggestedEnd) "Ends (suggested: $defaultMinutes min)" else "Ends", Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf(15, 30, 60, 120).forEach { minutes ->
+                TextButton(onClick = {
+                    endTime = com.tinkercobble.ham.data.EventEntryTime.parse(startTime)?.let {
+                        com.tinkercobble.ham.data.EventEntryTime.suggestedEnd(it, minutes)
+                    }?.toString().orEmpty()
+                    suggestedEnd = endTime.isNotBlank()
+                }) { Text(if (minutes == 60) "1 hour" else if (minutes == 120) "2 hours" else "$minutes min") }
+            }
         }
+        if (advancedOpen) TextButton(onClick = {
+            defaultMinutes = listOf(15, 30, 60, 120).let { options ->
+                options[(options.indexOf(defaultMinutes) + 1) % options.size]
+            }
+            EventEntryPreferences.setDefaultMinutes(context, defaultMinutes)
+        }) { Text("Default duration for new events: $defaultMinutes min · Change") }
         if (!timedValid) Text("Choose valid times with the end later on the same day. Times during a daylight-saving change are unavailable.",
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
+    TextButton(onClick = { locationOpen = !locationOpen }) {
+        Text(if (locationOpen) "Hide location" else if (location.isBlank()) "Add location (optional)" else "Edit location")
+    }
+    if (locationOpen) OutlinedTextField(value = location,
+        onValueChange = { if (it.length <= 8_192) location = it },
+        label = { Text("Location (optional)") }, modifier = Modifier.fillMaxWidth())
+    TextButton(onClick = { descriptionOpen = !descriptionOpen }) {
+        Text(if (descriptionOpen) "Hide description" else if (description.isBlank()) "Add description (optional)" else "Edit description")
+    }
+    if (descriptionOpen) OutlinedTextField(value = description,
+        onValueChange = { if (it.length <= 65_536) description = it },
+        label = { Text("Description (optional)") }, modifier = Modifier.fillMaxWidth())
     Spacer(Modifier.height(8.dp))
     if (model.calendars.value.none { it.canCreate }) Text("No writable calendars available.")
     else {
@@ -1850,7 +1943,7 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         Button(onClick = { confirm = true }, enabled = title.isNotBlank() && timedValid &&
             repeatValid && detailsValid && allDayRangeValid && multiDaySupported &&
             choice != null && !model.loading.value) {
-            Text("Review event")
+            Text("Save Event")
         }
         if (confirm) {
             val reviewed = model.selectedWritable(selectedId)
@@ -1858,7 +1951,7 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
                 text = { Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text("${title.trim()} · ${model.selectedDate.value}" +
                         if (allDay) "${if (multiDay) " through $lastAllDayDate" else ""} · All day"
-                        else " · $startTime–$endTime")
+                        else " · $normalizedStart–$normalizedEnd")
                     if (repeatSpec != null) Text(repeatSpec.label)
                     if (location.isNotBlank()) Text("Location: ${location.trim()}")
                     if (description.isNotBlank()) Text("Description: ${description.trim()}")
@@ -1871,17 +1964,17 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
                 } },
                 confirmButton = { Button(onClick = {
                     val id = reviewed?.id ?: return@Button
-                    val clearDraft = { title = ""; description = ""; location = "";
+                    val clearDraft = { quickDraftStore.clear(); title = ""; description = ""; location = "";
                         lastAllDayDateText = ""; confirm = false }
                     if (repeatSpec != null && allDay) model.createRecurringAllDay(id,
                         model.selectedDate.value, title, repeatSpec, description, location, clearDraft)
                     else if (repeatSpec != null) model.createRecurringTimed(id,
-                        model.selectedDate.value, startTime, endTime, title, repeatSpec,
+                        model.selectedDate.value, normalizedStart, normalizedEnd, title, repeatSpec,
                         description, location, clearDraft)
                     else if (allDay) model.create(id, model.selectedDate.value, title,
                         description, location, clearDraft,
                         endExclusive = checkNotNull(allDayEndExclusive))
-                    else model.createTimed(id, model.selectedDate.value, startTime, endTime, title,
+                    else model.createTimed(id, model.selectedDate.value, normalizedStart, normalizedEnd, title,
                         description, location, clearDraft)
                 }, enabled = reviewed != null && timedValid && repeatValid && detailsValid &&
                     allDayRangeValid && multiDaySupported && !model.loading.value) {
