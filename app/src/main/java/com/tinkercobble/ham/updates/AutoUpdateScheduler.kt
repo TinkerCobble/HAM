@@ -18,11 +18,14 @@ import java.util.concurrent.TimeUnit
 object AutoUpdateScheduler {
     private const val PREFS = "ham_auto_update"
     private const val ENABLED = "enabled"
-    private const val FOREGROUND = "foreground"
-    private const val FOREGROUND_AT = "foreground_at"
     private const val MANUAL_VERSION = "manual_version"
     private const val PERIODIC = "ham-self-update-periodic"
     private const val SOON = "ham-self-update-soon"
+
+    // Activity and WorkManager share HAM's default process. A process-local flag
+    // cannot become stale after a process death, and does not expire while the
+    // calendar stays visible for hours.
+    @Volatile private var foregroundInProcess = false
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -47,13 +50,10 @@ object AutoUpdateScheduler {
             ExistingPeriodicWorkPolicy.KEEP, request)
     }
 
-    fun foreground(context: Context) {
-        prefs(context).edit().putBoolean(FOREGROUND, true)
-            .putLong(FOREGROUND_AT, System.currentTimeMillis()).apply()
-    }
+    fun foreground() { foregroundInProcess = true }
 
     fun background(context: Context) {
-        prefs(context).edit().putBoolean(FOREGROUND, false).apply()
+        foregroundInProcess = false
         if (!isEnabled(context)) return
         val request = OneTimeWorkRequestBuilder<AutoUpdateWorker>()
             .setConstraints(unmetered())
@@ -63,11 +63,7 @@ object AutoUpdateScheduler {
         WorkManager.getInstance(context).enqueueUniqueWork(SOON, ExistingWorkPolicy.KEEP, request)
     }
 
-    fun isForeground(context: Context): Boolean {
-        val settings = prefs(context)
-        return settings.getBoolean(FOREGROUND, false) &&
-            System.currentTimeMillis() - settings.getLong(FOREGROUND_AT, 0) < 60L * 60L * 1000L
-    }
+    fun isForeground(): Boolean = foregroundInProcess
 
     fun canTrySilently(context: Context, code: Int): Boolean =
         isEnabled(context) && UpdateService.canInstall(context) &&
@@ -93,13 +89,13 @@ class AutoUpdateWorker(context: Context, parameters: WorkerParameters) : Corouti
         if (Build.VERSION.SDK_INT < 31 || !AutoUpdateScheduler.isEnabled(context) ||
             !UpdateService.canInstall(context))
             return Result.success()
-        if (AutoUpdateScheduler.isForeground(context)) return Result.retry()
+        if (AutoUpdateScheduler.isForeground()) return Result.retry()
         val update = UpdateService.check(context, manual = false).update ?: return Result.success()
         if (!AutoUpdateScheduler.canTrySilently(context, update.versionCode)) return Result.success()
         return try {
             val file = UpdateService.downloadAndVerify(context, update) { }
             if (isStopped || !AutoUpdateScheduler.isEnabled(context) ||
-                AutoUpdateScheduler.isForeground(context)) return Result.retry()
+                AutoUpdateScheduler.isForeground()) return Result.retry()
             try {
                 UpdateService.commitSelfUpdate(context, file, update)
                 Result.success()

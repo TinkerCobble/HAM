@@ -1,9 +1,15 @@
 # Public HAM — Chat and Codex handoff
 
+## Code131 source candidate — 2026-10-29
+
+- **Change:** replace the self-updater's persisted foreground flag/one-hour expiry with process-local activity state. A long-visible calendar no longer becomes eligible for a background install merely because an hour passed; process death cannot leave a stale persistent foreground state.
+- **Note8:** exact signed code131 accepted in place over code130 with established package/signer, matching pulled APK, unchanged first-install time, Home Assistant Connected and old `.dev` present.
+- **Open:** complete audited public build/unsigned parity/Gitleaks/CI, source ZIP, live APK/source read-back and feed-last deployment, then observe Pixel code130-to-code131 background behavior. Do not claim unattended Pixel installation yet.
+
 ## Code130 runtime update — 2026-10-29
 
 - **Accepted:** signed Android 16 synthetic emulator code129 used its background worker and PackageInstaller self-update to install exact live public code130 without an approval screen; installed hash/signer, first-install time and relaunch matched the accepted release. This validates the conditional path on the emulator.
-- **Pixel:** the physical Pixel later reached exact code130 with its original first-install time and signer, but Android's system installer UI appeared with HAM foreground. Whether the owner approved that install is being clarified; do not call physical unattended installation accepted. The owner enabled HAM background usage after Android had restricted its scheduled job. Test the next substantive higher-code update without a destructive downgrade.
+- **Pixel:** the physical Pixel later reached exact code130 with its original first-install time and signer. Android's system installer UI appeared with HAM foreground, and the owner confirmed manual download or installation; physical unattended installation is not accepted for that cycle. The owner enabled HAM background usage after Android had restricted its scheduled job. Use code131 for the next higher-code test without a destructive downgrade.
 
 ## Current session — 2026-10-29, code130 conditional self-update
 

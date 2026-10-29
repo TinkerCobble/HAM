@@ -189,7 +189,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onStart() {
         super.onStart()
-        AutoUpdateScheduler.foreground(this)
+        AutoUpdateScheduler.foreground()
         AutoUpdateScheduler.schedule(this)
     }
     override fun onStop() {
