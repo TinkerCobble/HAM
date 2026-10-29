@@ -1,5 +1,12 @@
 # Public HAM — Chat and Codex handoff
 
+## Latest session — 2026-10-29, code125 source and live download
+
+- **Repository/branch:** separate public `TinkerCobble/HAM` `main` source commit `ca56ce4`, pushed and remote-read back; private development history stayed private. A documentation commit follows this record.
+- **Change:** canonical 0.3.9/code125 guards foreground Calendar Provider observation until Android calendars are enabled and current `READ_CALENDAR` permission exists, handling a revocation race. This fixes a code124 `SecurityException` reproduced on a clean Android 16 Pixel 8 emulator.
+- **Verification:** clean public build/tests/lint, source privacy, Gitleaks current/history, exact source ZIP and signed APK scans, and GitHub privacy CI passed. Public/private unsigned APK members matched except generated VCS metadata. Signed code125 passed emulator no-permission/grant/revocation checks and Note8 same-signer in-place update with original first-install time and HA Connected state. Anonymous live APK SHA-256 `8FA775776360CE195CA232EECC41A2C5C84D50F35E7DF4253DCFEFFBC610467E`, source ZIP SHA-256 `AD8B46D66F631C217A2E35F9A833C8C67804930C2DE2A726D941ACA09B402BC6`; downloaded identity/signer checked.
+- **Release/next:** website `main@bcc8474`, Pages preview `08214372`, public no-sign-in code125 download live. Real Pixel 8 in-place update and data acceptance await wireless ADB/device access. Canonical auto-update feed remains unpublished; old code124/121/DEV objects remain. Wider feature/provider gates stay in the private HAM matrix.
+
 ## Latest session — 2026-10-29, code125 Android 16 startup repair source
 
 - **Cause/change:** exact public code124 reproduced a permission-denied startup crash on a clean Android 16 Pixel 8 emulator. Canonical 0.3.9/code125 guards Calendar Provider observer registration until `READ_CALENDAR` is held and Android calendars are enabled; no permission, account, storage or network path was added.
