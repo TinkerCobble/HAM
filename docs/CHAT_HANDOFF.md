@@ -1,5 +1,11 @@
 # Public HAM — Chat and Codex handoff
 
+## Latest session — 2026-10-29, physical Pixel 8 code125 acceptance
+
+- **Diagnosis/action:** the actual Pixel 8's public code124 APK reproduced the same permission-denied Calendar Provider observer crash as the emulator. The same-signer, higher-code public code125 APK installed over canonical HAM without uninstall or data clear.
+- **Verification:** original first-install time retained; device-pulled APK SHA-256 `8FA775776360CE195CA232EECC41A2C5C84D50F35E7DF4253DCFEFFBC610467E` matched Note8/staged/live. HAM remained foreground after initial launch and force-stop/relaunch with no new crash. First-run screen has no connected HA or Android calendar source, so provider access is not claimed. No private log, endpoint, device identifier, calendar or credential entered this public repository.
+- **Next:** owner may connect accounts through Pixel screens; continue provider/feature matrix and canonical update-feed work. Prior Pixel-pending entries are historical.
+
 ## Latest session — 2026-10-29, code125 source and live download
 
 - **Repository/branch:** separate public `TinkerCobble/HAM` `main` source commit `ca56ce4`, pushed and remote-read back; private development history stayed private. A documentation commit follows this record.
