@@ -1,5 +1,10 @@
 # Public HAM — Chat and Codex handoff
 
+## Code130 runtime update — 2026-10-29
+
+- **Accepted:** signed Android 16 synthetic emulator code129 used its background worker and PackageInstaller self-update to install exact live public code130 without an approval screen; installed hash/signer, first-install time and relaunch matched the accepted release. This validates the conditional path on the emulator.
+- **Pixel:** the physical Pixel later reached exact code130 with its original first-install time and signer, but Android's system installer UI appeared with HAM foreground. Whether the owner approved that install is being clarified; do not call physical unattended installation accepted. The owner enabled HAM background usage after Android had restricted its scheduled job. Test the next substantive higher-code update without a destructive downgrade.
+
 ## Current session — 2026-10-29, code130 conditional self-update
 
 - **Source:** standalone audited public tree includes canonical code130 automatic-update implementation, without private Git history. It adds background unmetered feed checks, exact APK verification, conditional Android 12+ PackageInstaller self-update, Settings opt-out and foreground approval fallback. Android 9 retains the existing interactive update path.
