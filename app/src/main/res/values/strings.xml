@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ham_widget_description">Selected cached agenda. Event details are off until enabled in HAM settings.</string>
+</resources>

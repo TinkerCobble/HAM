@@ -28,19 +28,23 @@ import androidx.compose.ui.viewinterop.AndroidView
 class HomeAssistantLoginActivity : ComponentActivity() {
     companion object {
         const val EXTRA_AUTHORIZE_URL = "authorize_url"
-        const val EXTRA_REDIRECT_SCHEME = "redirect_scheme"
+        const val EXTRA_REDIRECT_URI = "redirect_uri"
         const val EXTRA_CALLBACK_URL = "callback_url"
+        const val EXTRA_AUTH_ERROR = "auth_error"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val authorizeUrl = intent.getStringExtra(EXTRA_AUTHORIZE_URL)
-        val redirectScheme = intent.getStringExtra(EXTRA_REDIRECT_SCHEME)
-        if (authorizeUrl == null || !authorizeUrl.startsWith("http") || redirectScheme.isNullOrBlank()) {
+        val authorizeUrl = intent.getStringExtra(EXTRA_AUTHORIZE_URL) ?: run { finish(); return }
+        val initialOrigin = android.net.Uri.parse(authorizeUrl)
+        val redirect = intent.getStringExtra(EXTRA_REDIRECT_URI)?.let(android.net.Uri::parse)
+            ?: run { finish(); return }
+        if (initialOrigin.scheme !in listOf("http", "https") || initialOrigin.host.isNullOrBlank() ||
+            redirect.scheme.isNullOrBlank() || redirect.authority.isNullOrBlank() ||
+            redirect.path.orEmpty().isNotEmpty()) {
             finish()
             return
         }
-        val initialOrigin = android.net.Uri.parse(authorizeUrl)
         setContent {
             MaterialTheme {
                 val webView = remember {
@@ -52,8 +56,14 @@ class HomeAssistantLoginActivity : ComponentActivity() {
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                                if (request.isForMainFrame && request.url.scheme == redirectScheme) {
-                                    setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_CALLBACK_URL, request.url.toString()))
+                                if (request.isForMainFrame && request.url.scheme == redirect.scheme) {
+                                    if (request.url.authority == redirect.authority &&
+                                        request.url.path == redirect.path && request.url.fragment == null) {
+                                        setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_CALLBACK_URL, request.url.toString()))
+                                    } else {
+                                        setResult(Activity.RESULT_CANCELED, Intent().putExtra(EXTRA_AUTH_ERROR,
+                                            "Home Assistant returned to an unexpected address"))
+                                    }
                                     finish()
                                     return true
                                 }

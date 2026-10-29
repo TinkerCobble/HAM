@@ -1,38 +1,28 @@
 # HAM — Home Agenda Manager
 
-HAM is a native Android app for an existing [Home Assistant](https://www.home-assistant.io/) installation. It reads calendars and open to-do items, and can create events or edit event titles when the selected calendar reports support. Home Assistant and its configured providers remain the source of truth; HAM does not host calendar data.
+HAM is a native Android agenda for calendars the user chooses to connect. Home Assistant and each calendar provider own their records. HAM has no TinkerCobble account, ads, analytics, AI scheduler, or hosted calendar backend.
 
-This repository contains the complete source for the **experimental HAM DEV 0.1.12-dev (versionCode 13)** build prepared for [TinkerCobble's HAM page](https://tinkercobble.com/ham/) after Note8 acceptance. Its public Git history begins with an audited source snapshot; private development history was not copied here. DEV uses `com.tinkercobble.ham.dev` and requires Android 9 or newer. Stable uses a separate package identity and has not been released. No APK or signing key is stored in this repository.
+## Public release
+
+HAM 0.3.8 (versionCode 124) is the current canonical Android package, `com.tinkercobble.ham`. The exact signed APK is distributed at [TinkerCobble's HAM page](https://tinkercobble.com/ham/) with an immutable matching source archive. This public repository contains the audited standalone source snapshot; private development Git history and signing material are not included. The older `.dev` package is separate and remains available only for migration compatibility.
+
+Code124 was installed over the existing canonical app on a Note8 with the established signer and its data preserved. Disposable iCloud tests verified timed event location and description edits, server read-back, and one stale-version conflict. HAM remains in active development; see [status](docs/STATUS.md) and the public release notes. A public download does not claim full provider or feature acceptance.
 
 ## Build
 
-Install JDK 21 and Android SDK platform 37, with an Android SDK accepted by the Android Gradle Plugin. This source was built with Android Studio's JDK 21 runtime and the Gradle 9.8.0 wrapper. From the repository root, run:
+Install JDK 21 and Android SDK platform 37. This source uses the Gradle 9.8.0 wrapper. From the repository root:
 
 ```powershell
-.\gradlew.bat :app:assembleDevDebug :app:testDevDebugUnitTest :app:lintDevDebug
+.\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
 python scripts/privacy_check.py
 ```
 
-The privacy workflow runs three independent jobs: Gitleaks against all reachable public Git history, source/privacy checks, and a byte-verified check of the currently published APK, matching source ZIP, HAM pages, stylesheet, checksum files, and DEV update feed. An installation error or failure in any job fails the workflow. Before publishing a *new* build, update `release/privacy-artifacts.json` with the candidate's verified URL and SHA-256, run `python scripts/privacy_artifacts.py --staged --apk <signed-apk> --source-zip <matching-source-zip> --website-dir <website-site-directory>` on the staged files, and review the app's actual data flow. Publish the APK and source first; advance the public update feed last, after the live bytes pass the same audit. The gate detects known patterns and cannot prove that all personal information is absent; see [privacy audit and release checklist](docs/PRIVACY_RELEASE_CHECKLIST.md).
+The release task produces an **unsigned** APK. The signed production APK uses protected signing material outside this repository; a local debug or unsigned build cannot update an installed production app. This source snapshot's clean release APK matched the private candidate in all package entries except build-generated version-control metadata. The signed APK itself is not stored in Git.
 
-On macOS or Linux, use `./gradlew` and `python3`. The local debug APK is produced at `app/build/outputs/apk/dev/debug/app-dev-debug.apk`. It is signed with your local Android debug identity and **cannot update** the publicly distributed DEV app, which uses a separate permanent signer. Never uninstall the installed DEV app merely to test a locally built APK if its data matters.
+## Accounts and data
 
-The `stableDirect`, `stablePlay`, and `stableFdroid` flavors share this source tree. They are development preparations; a build from them is not a released Stable product. Release APK signing uses private credentials that are deliberately absent. This source does not contain a Stable APK or update manifest.
-
-## Home Assistant connection
-
-In HAM DEV, open Settings, enter the address of a Home Assistant installation you control, then sign in on Home Assistant's authorization screen. HAM uses `https://tinkercobble.com/ham/` as its OAuth application identity. The authorization callback stays in the app. The public page does not receive your authorization code or calendar contents. Tokens are stored in Android private encrypted storage; loaded calendar and task information is held in memory.
-
-Calendar choices are keyed by the exact Home Assistant entity ID, including when names are identical. A calendar must report write support before HAM offers creation. There is no automatically selected first writable calendar; a user can choose an explicit default. Month, next seven days, and three-day views are available. Visibility, favorites, and color choices are saved locally. Tasks are read-only in this source snapshot.
-
-Screenshot import accepts an image from Android Share or the system photo picker, extracts event details on the device, and presents them for review. An optional address check queries OpenStreetMap only when requested. Saving uses an explicitly chosen writable Home Assistant calendar and a private authenticated attachment endpoint; see [screenshot import details](docs/SCREENSHOT_IMPORT.md). The endpoint's complete source is in `home-assistant/` and must be installed separately by a Home Assistant administrator.
-
-## Status and distribution
-
-The current public download is labeled **Experimental DEV build** on the [HAM product page](https://tinkercobble.com/ham/). Direct DEV installations check a separate DEV feed at launch and can download a verified newer APK after you choose Update now; Android always asks for installation approval. Later dismisses the prompt for the current app session. It installs separately from a future Stable app. The release path for Stable is Note8 acceptance, then a data-preserving Pixel 8 acceptance, then an explicitly approved public release. There is no Stable APK, Google Play listing, or F-Droid submission. The F-Droid flavor is preparatory and uses that distribution channel's normal update route; eligibility and build verification remain open.
+HAM connects directly to the user's Home Assistant and supported calendar providers. Calendar choices and protected credentials stay in Android app-private storage. Calendar writes are offered only where the selected provider reports the required capability. Offline changes can remain queued for review; provider records are authoritative. See the [privacy data flow](docs/PRIVACY_DATA_FLOW.md) and the [website privacy policy](https://tinkercobble.com/ham/privacy/).
 
 ## License and notices
 
-HAM-authored code and project-owned icon artwork, including `design/ham-approved-original.png` and generated variants, are offered under [GNU GPL v3 only](LICENSE) (`GPL-3.0-only`). Third-party dependencies retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md), [OCR binary license materials](third_party_licenses/tesseract4android-4.9.0/), and [artwork/dependency notes](docs/OPEN_SOURCE.md). The original icon was created by the project owner using AI tools and approved for this license. No third-party artwork source was identified.
-
-See the public [Privacy Policy](https://tinkercobble.com/ham/privacy/) and [Terms](https://tinkercobble.com/ham/terms/). For support or privacy questions, use [support@tinkercobble.com](mailto:support@tinkercobble.com).
+HAM-authored code and project-owned icon artwork are [GPL-3.0-only](LICENSE). Third-party components retain their licenses; see [notices](THIRD_PARTY_NOTICES.md) and [OCR license materials](third_party_licenses/tesseract4android-4.9.0/). Report security issues privately to [support@tinkercobble.com](mailto:support@tinkercobble.com); keep credentials, private calendar data, and screenshots out of public issues.

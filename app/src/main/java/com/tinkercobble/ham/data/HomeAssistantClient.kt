@@ -8,6 +8,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -27,48 +34,102 @@ import java.io.File
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 
+interface HaMutationTransport {
+    fun sessionBinding(): String?
+    suspend fun calendars(): List<CalendarSource>
+    suspend fun events(source: CalendarSource, from: LocalDate, until: LocalDate): List<AgendaEvent>
+    suspend fun send(command: JSONObject)
+}
+
 class HomeAssistantClient(context: Context) {
     data class EventRead(val events: List<AgendaEvent>, val succeeded: Set<String>, val failed: Map<String, String>)
     private val store = SecureSession(context)
-    private var session: Session? = store.load()
+    @Volatile private var session: Session? = store.load()
+    private val refreshLock = Mutex()
     val connected get() = session != null
     val server get() = session?.server
     val clientId get() = session?.clientId
-    fun setSession(value: Session) { session = value; store.save(value) }
+    private fun binding(value: Session): String = MessageDigest.getInstance("SHA-256")
+        .digest(listOf(value.server, value.clientId, value.refreshToken)
+            .joinToString("\u0000").toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    /** A nonreversible key for one server/client authorization; no token enters the queue. */
+    fun sessionBinding(): String? = store.load()?.let(::binding)
+
+    fun mutationTransport(): HaMutationTransport = object : HaMutationTransport {
+        override fun sessionBinding() = this@HomeAssistantClient.sessionBinding()
+        override suspend fun calendars() = this@HomeAssistantClient.calendars()
+        override suspend fun events(source: CalendarSource, from: LocalDate, until: LocalDate) =
+            this@HomeAssistantClient.events(listOf(source), from, until)
+        override suspend fun send(command: JSONObject) {
+            val inMemory = session ?: error("Reconnect Home Assistant before syncing")
+            check(sessionBinding() == binding(inMemory)) { "Home Assistant sign-in changed" }
+            calendarCommand(command, "Pending calendar change rejected")
+        }
+    }
+    fun setSession(value: Session) { store.save(value); session = value }
     suspend fun disconnect(requestRevocation: Boolean): Boolean {
         val accepted = if (requestRevocation) session?.let { HomeAssistantAuth.requestRevocation(it) } ?: false else false
-        session = null
-        store.clear()
+        refreshLock.withLock {
+            store.clear()
+            session = null
+        }
         return accepted
     }
 
     private suspend fun current(): Session {
         val existing = session ?: error("Connect to Home Assistant first")
         if (existing.expiresAt > System.currentTimeMillis() + 60000) return existing
-        val renewed = HomeAssistantAuth.refresh(existing)
-        setSession(renewed)
-        return renewed
+        return refreshLock.withLock {
+            val latest = session ?: error("Connect to Home Assistant first")
+            if (latest.expiresAt > System.currentTimeMillis() + 60000) latest else {
+                val renewed = HomeAssistantAuth.refresh(latest)
+                setSession(renewed)
+                renewed
+            }
+        }
+    }
+
+    private suspend fun refreshAfterUnauthorized(used: Session): Session = refreshLock.withLock {
+        val latest = session ?: error("Connect to Home Assistant first")
+        check(latest.server == used.server && latest.clientId == used.clientId) {
+            "Home Assistant connection changed. Refresh the calendar."
+        }
+        if (latest.accessToken != used.accessToken) latest else {
+            val renewed = HomeAssistantAuth.refresh(latest)
+            setSession(renewed)
+            renewed
+        }
     }
 
     private suspend fun request(path: String, payload: JSONObject? = null): String = withContext(Dispatchers.IO) {
-        val auth = current()
-        val connection = URL(auth.server + path).openConnection() as HttpURLConnection
-        connection.instanceFollowRedirects = false // Never forward a bearer token to another host.
-        connection.connectTimeout = 10000
-        connection.readTimeout = 20000
-        connection.setRequestProperty("Authorization", "Bearer ${auth.accessToken}")
-        connection.setRequestProperty("Accept", "application/json")
-        if (payload != null) {
-            connection.requestMethod = "POST"
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+        var auth = current()
+        repeat(2) { attempt ->
+            val connection = URL(auth.server + path).openConnection() as HttpURLConnection
+            connection.instanceFollowRedirects = false // Never forward a bearer token to another host.
+            connection.connectTimeout = 10000
+            connection.readTimeout = 20000
+            connection.setRequestProperty("Authorization", "Bearer ${auth.accessToken}")
+            connection.setRequestProperty("Accept", "application/json")
+            try {
+                if (payload != null) {
+                    connection.requestMethod = "POST"
+                    connection.doOutput = true
+                    connection.setRequestProperty("Content-Type", "application/json")
+                    connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                }
+                val code = connection.responseCode
+                if (code == 401 && payload == null && attempt == 0) {
+                    auth = refreshAfterUnauthorized(auth)
+                    return@repeat
+                }
+                if (code == 401) error("Home Assistant session was rejected. Reconnect Home Assistant.")
+                if (code !in 200..299) error("Home Assistant request failed ($code)")
+                return@withContext connection.inputStream.bufferedReader().use { it.readText() }
+            } finally { connection.disconnect() }
         }
-        val code = connection.responseCode
-        val body = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
-        connection.disconnect()
-        if (code !in 200..299) error("Home Assistant request failed ($code)")
-        body
+        error("Home Assistant request could not complete")
     }
 
     suspend fun calendars(): List<CalendarSource> {
@@ -118,16 +179,23 @@ class HomeAssistantClient(context: Context) {
         return distinctEvents(sources.flatMap { eventsFor(it, from, until) })
     }
 
-    suspend fun readEvents(sources: List<CalendarSource>, from: LocalDate, until: LocalDate): EventRead {
+    suspend fun readEvents(sources: List<CalendarSource>, from: LocalDate, until: LocalDate): EventRead = supervisorScope {
         val results = mutableListOf<AgendaEvent>()
         val succeeded = mutableSetOf<String>()
         val failed = mutableMapOf<String, String>()
-        for (source in sources) {
-            try { results += eventsFor(source, from, until); succeeded += source.id }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { failed[source.id] = e.message ?: "Request failed" }
+        val limit = Semaphore(4)
+        val reads = sources.map { source -> async {
+            limit.withPermit {
+                try { source to Result.success(eventsFor(source, from, until)) }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) { source to Result.failure(e) }
+            }
+        } }.awaitAll()
+        for ((source, outcome) in reads) {
+            outcome.onSuccess { results += it; succeeded += source.id }
+                .onFailure { failed[source.id] = it.message ?: "Request failed" }
         }
-        return EventRead(distinctEvents(results), succeeded, failed)
+        EventRead(distinctEvents(results), succeeded, failed)
     }
 
     private suspend fun eventsFor(source: CalendarSource, from: LocalDate, until: LocalDate): List<AgendaEvent> {
@@ -136,21 +204,6 @@ class HomeAssistantClient(context: Context) {
         val end = java.net.URLEncoder.encode(until.atStartOfDay(zone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "UTF-8")
         val array = JSONArray(request("/api/calendars/${source.id}?start=$start&end=$end"))
         return (0 until array.length()).map { AgendaEvent.fromJson(source, array.getJSONObject(it)) }
-    }
-
-    suspend fun createAllDay(source: CalendarSource, date: LocalDate, summary: String, known: List<AgendaEvent>) {
-        // Re-read capabilities immediately before writing. A stale screen must never redirect to a namesake.
-        val currentSource = CalendarSelection.resolveWritable(source.id, calendars())
-            ?: error("This calendar is unavailable or read-only. Choose another calendar.")
-        require(currentSource.id == source.id) { "Calendar identity changed" }
-        require(summary.isNotBlank()) { "Enter an event title" }
-        val current = events(listOf(currentSource), date, date.plusDays(1))
-        require((known + current).none { it.calendarId == source.id && it.occursOn(date) && it.summary.equals(summary.trim(), true) }) {
-            "That event already appears on this calendar and date"
-        }
-        val data = JSONObject().put("entity_id", source.id).put("summary", summary.trim())
-            .put("start_date", date.toString()).put("end_date", date.plusDays(1).toString())
-        request("/api/services/calendar/create_event", data)
     }
 
     /** The attachment endpoint belongs to HAM's optional authenticated HA integration. */
@@ -248,13 +301,47 @@ class HomeAssistantClient(context: Context) {
             ?: error("Home Assistant accepted the request, but event read-back is pending. Do not retry until the calendar refreshes.")
     }
 
-    suspend fun updateTitle(source: CalendarSource, event: AgendaEvent, title: String) {
-        require(source.canUpdate && event.uid != null && event.recurrenceId == null) { "This event cannot be safely edited here" }
-        require(title.isNotBlank()) { "Enter an event title" }
-        val current = events(listOf(source), event.date.minusDays(1), event.date.plusDays(2))
-        require(current.any { it.uid == event.uid && it.recurrenceId == null && it.start == event.start && it.end == event.end && it.summary == event.summary }) {
-            "This event changed in Home Assistant. Refresh before editing."
-        }
+    suspend fun updateTitle(source: CalendarSource, event: AgendaEvent, title: String): Boolean =
+        updateEvent(source, event, title)
+
+    suspend fun updateTimed(source: CalendarSource, event: AgendaEvent, title: String,
+        startText: String, endText: String): Boolean =
+        updateEvent(source, event, title, startText, endText)
+
+    private suspend fun updateEvent(source: CalendarSource, event: AgendaEvent, title: String,
+        startText: String? = null, endText: String? = null): Boolean {
+        val currentSource = calendars().singleOrNull {
+            it.id == source.id && it.provider == CalendarProviderKind.HOME_ASSISTANT && it.canUpdate
+        } ?: error("This calendar is unavailable or does not permit editing")
+        val live = events(listOf(currentSource), event.date.minusDays(1), event.date.plusDays(2))
+        val command = HomeAssistantCalendarMutation.updateCommand(currentSource, event, live,
+            title, startText, endText)
+        calendarCommand(command, "Update rejected")
+        // The provider may project the accepted change later; a failed post-write read is
+        // unconfirmed and must not be reported as a rejected command or automatically replayed.
+        return try {
+            HomeAssistantCalendarMutation.updateVisible(currentSource, event, command,
+                events(listOf(currentSource), event.date.minusDays(1), event.date.plusDays(2)))
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { false }
+    }
+
+    /** Delete one exact nonrecurring event on a calendar that still advertises delete support. */
+    suspend fun deleteEvent(source: CalendarSource, event: AgendaEvent): Boolean {
+        val currentSource = calendars().singleOrNull {
+            it.id == source.id && it.provider == CalendarProviderKind.HOME_ASSISTANT && it.canDelete
+        } ?: error("This calendar is unavailable or does not permit removal")
+        val from = event.date.minusDays(1)
+        val until = event.date.plusDays(2)
+        val live = events(listOf(currentSource), from, until)
+        val command = HomeAssistantCalendarMutation.deleteCommand(currentSource, event, live)
+        calendarCommand(command, "Removal rejected")
+        // A delayed provider projection is an accepted but unconfirmed removal, not a reason to resend.
+        return runCatching { events(listOf(currentSource), from, until)
+            .none { it.calendarId == source.id && it.uid == event.uid } }.getOrDefault(false)
+    }
+
+    private suspend fun calendarCommand(command: JSONObject, rejection: String) {
         val auth = current()
         val result = CompletableFuture<JSONObject>()
         val wsUrl = auth.server.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://") + "/api/websocket"
@@ -266,13 +353,8 @@ class HomeAssistantClient(context: Context) {
                         val json = JSONObject(text)
                         when (json.optString("type")) {
                             "auth_required" -> webSocket.send(JSONObject().put("type", "auth").put("access_token", auth.accessToken).toString())
-                            "auth_ok" -> {
-                                val edited = JSONObject().put("start", event.start).put("end", event.end)
-                                    .put("summary", title.trim()).put("description", event.description).put("location", event.location)
-                                webSocket.send(JSONObject().put("id", 1).put("type", "calendar/event/update")
-                                    .put("entity_id", source.id).put("uid", event.uid).put("event", edited).toString())
-                            }
-                            "result" -> result.complete(json)
+                            "auth_ok" -> webSocket.send(command.toString())
+                            "result" -> if (json.optInt("id") == command.optInt("id")) result.complete(json)
                             "auth_invalid" -> result.completeExceptionally(IllegalStateException("Home Assistant session expired"))
                         }
                     } catch (e: Exception) { result.completeExceptionally(e) }
@@ -281,7 +363,7 @@ class HomeAssistantClient(context: Context) {
             })
         try {
             val reply = withContext(Dispatchers.IO) { withTimeout(25000) { result.get(25, TimeUnit.SECONDS) } }
-            if (!reply.optBoolean("success")) error(reply.optJSONObject("error")?.optString("message") ?: "Update rejected")
+            if (!reply.optBoolean("success")) error(reply.optJSONObject("error")?.optString("message") ?: rejection)
         } finally { socket.close(1000, "Done") }
     }
 }

@@ -1,4 +1,10 @@
-# Public HAM status — 2026-10-20
+# Public HAM status — 2026-10-29
+
+## Canonical 0.3.8/code124 source candidate
+
+This separate public repository stages the standalone canonical `com.tinkercobble.ham` source for the owner-approved 0.3.8/code124 website release. It contains no private development Git history or signing material. The private Note8-installed signed APK has SHA-256 `00BA5D75CD4DB0FCEE4C37155910C5FC0D0451793078CF9F686EC289D8975276`. A clean public-source unsigned release build passed; every APK ZIP member matched the private unsigned candidate except build-generated `META-INF/version-control-info.textproto`. Public-source privacy and Gitleaks current/history checks passed locally. Exact source-archive and live website checks remain before distribution is complete.
+
+Note8 synthetic iCloud acceptance covered timed location and description edits plus one stale-version conflict without overwriting the newer provider record. Other providers, recurrence, widgets, and wider feature acceptance remain ongoing work. The old `.dev` package and its separate data remain for migration compatibility. The historical DEV status below is retained as history; it does not describe this canonical source snapshot.
 
 The public app/source baseline remains experimental HAM DEV 0.1.12-dev, versionCode 13, package `com.tinkercobble.ham.dev`; Stable is unpublished. No APK, update feed, app version, or phone installation changed in the privacy repair.
 

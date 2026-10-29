@@ -2,6 +2,7 @@ package com.tinkercobble.ham.auth
 
 import java.net.URI
 import java.net.URLDecoder
+import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -15,6 +16,13 @@ object AuthIdentity {
 
     fun challenge(verifier: String): String = Base64.getUrlEncoder().withoutPadding()
         .encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)))
+
+    fun authorizationUrl(server: String, redirect: String, state: String, verifier: String?): String {
+        fun parameter(value: String) = URLEncoder.encode(value, "UTF-8")
+        return "$server/auth/authorize?client_id=${parameter(CLIENT_ID)}" +
+            "&redirect_uri=${parameter(redirect)}&state=${parameter(state)}" +
+            (verifier?.let { "&code_challenge=${parameter(challenge(it))}&code_challenge_method=S256" } ?: "")
+    }
 
     fun callbackCode(url: String, redirect: String, expectedState: String): String {
         val actual = URI(url)

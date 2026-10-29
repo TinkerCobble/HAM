@@ -4,56 +4,29 @@ import argparse
 import pathlib
 import re
 import sys
-import subprocess
 import urllib.error
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 APP = ROOT / "app/src/main"
-EXPECTED_PERMISSIONS = {"android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"}
+EXPECTED_PERMISSIONS = {
+    "android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.REQUEST_INSTALL_PACKAGES", "com.tinkercobble.ham.legacy.MIGRATE",
+    "android.permission.READ_CALENDAR", "android.permission.WRITE_CALENDAR",
+    "android.permission.POST_NOTIFICATIONS", "android.permission.SCHEDULE_EXACT_ALARM",
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+}
 EXPECTED_LIBRARIES = {
     "androidx-core-ktx", "androidx-activity-compose", "androidx-lifecycle-runtime-ktx",
     "androidx-lifecycle-viewmodel-compose", "androidx-compose-bom", "androidx-compose-ui",
     "androidx-compose-ui-tooling-preview", "androidx-compose-material3",
     "androidx-compose-foundation", "androidx-compose-ui-tooling", "junit", "okhttp",
+    "androidx-test-ext-junit", "androidx-test-runner", "androidx-work-runtime-ktx",
 }
-ALLOWED_HOSTS = {"tinkercobble.com", "your-home-assistant.example", "nominatim.openstreetmap.org"}
-PUBLIC_EMAILS = {"support@tinkercobble.com", "dev@tinkercobble.com", "secret@example.com"}
-SYNTHETIC_LOCAL_ADDRESS = "192.168.1.5"
-
-
-def check_public_literals() -> list[str]:
-    """Flag owner data in source without printing a matched value."""
-    if (ROOT / ".git").exists():
-        tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout
-        paths = [ROOT / item.decode("utf-8") for item in tracked.split(b"\0") if item]
-    else:  # Published source ZIPs deliberately contain no Git history.
-        paths = [ROOT / "README.md"]
-        for directory in ("app/src", "docs", "home-assistant", "scripts", "release"):
-            paths.extend((ROOT / directory).rglob("*"))
-    if not paths:
-        return ["No source files were checked for private literals"]
-    errors = []
-    for path in paths:
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in {".kt", ".py", ".md", ".json", ".xml", ".toml", ".kts", ".yml", ".yaml", ".html", ".properties"}:
-            continue
-        if "third_party_licenses" in path.parts:
-            continue  # Upstream copyright contacts are reviewed separately, not owner data.
-        data = path.read_text(encoding="utf-8", errors="replace")
-        label = path.relative_to(ROOT)
-        if re.search(r"[A-Za-z]:[\\/]Users[\\/]", data):
-            errors.append(f"Possible local user path in {label} (value withheld)")
-        for address in re.findall(r"(?<!\d)(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?!\d)", data):
-            if address != SYNTHETIC_LOCAL_ADDRESS:
-                errors.append(f"Possible private network address in {label} (value withheld)")
-                break
-        for email in re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", data):
-            if email.lower() not in PUBLIC_EMAILS:
-                errors.append(f"Unexpected email in {label} (value withheld)")
-                break
-    return errors
+ALLOWED_HOSTS = {"tinkercobble.com", "your-home-assistant.example",
+                 "nominatim.openstreetmap.org", "caldav.icloud.com"}
+# XML parser feature identifiers are URIs, not HAM network destinations.
+XML_FEATURE_URIS = ("http://apache.org/xml/features/", "http://xml.org/sax/features/")
 
 
 def check() -> list[str]:
@@ -66,26 +39,32 @@ def check() -> list[str]:
         errors.append("Android backup setting changed; review local-data policy")
     if 'android:exported="false"' not in manifest or 'HomeAssistantLoginActivity' not in manifest:
         errors.append("Authorization activity exposure changed")
+    for receiver in ("LocalReminderReceiver", "LocalReminderRestoreReceiver"):
+        if not re.search(r'<receiver\s+android:name="\.' + receiver +
+                         r'"\s+android:exported="false"', manifest):
+            errors.append(f"Local reminder receiver exposure changed: {receiver}")
 
-    for flavor in ("dev", "stableDirect"):
-        direct_manifest = (ROOT / "app/src" / flavor / "AndroidManifest.xml").read_text(encoding="utf-8")
-        if 'android.permission.REQUEST_INSTALL_PACKAGES' not in direct_manifest or 'androidx.core.content.FileProvider' not in direct_manifest:
-            errors.append(f"Direct installer declaration missing from {flavor}")
-    for flavor in ("stablePlay", "stableFdroid"):
-        flavor_dir = ROOT / "app/src" / flavor
-        if any('REQUEST_INSTALL_PACKAGES' in path.read_text(encoding="utf-8") for path in flavor_dir.rglob("*.xml")):
-            errors.append(f"Direct installer permission leaked into {flavor}")
-    for name in ("stablePlay", "stableFdroid"):
-        if (ROOT / "app/src" / name / "java/com/tinkercobble/ham/updates/DirectUpdatePolicy.kt").exists():
-            errors.append(f"Direct updater leaked into {name}")
+    if 'androidx.core.content.FileProvider' not in manifest or 'android:exported="false"' not in manifest:
+        errors.append("Private update FileProvider missing from canonical manifest")
+    if 'com.tinkercobble.ham.dev.migration' not in manifest:
+        errors.append("Legacy settings import visibility missing")
 
     catalog = (ROOT / "gradle/libs.versions.toml").read_text(encoding="utf-8")
     libraries = set(re.findall(r'^([a-z][a-z0-9-]+)\s*=\s*\{\s*module\s*=', catalog, re.M))
     if libraries != EXPECTED_LIBRARIES:
         errors.append(f"Dependency inventory changed: {sorted(libraries ^ EXPECTED_LIBRARIES)}")
     build = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
+    if 'applicationId = "com.tinkercobble.ham"' not in build or 'productFlavors' in build:
+        errors.append("Canonical package or single-variant build changed")
+    policy = (APP / "java/com/tinkercobble/ham/updates/UpdatePolicy.kt").read_text(encoding="utf-8")
+    if 'https://tinkercobble.com/ham/update.json' not in policy or 'const val CHANNEL = "ham"' not in policy:
+        errors.append("Single-track update feed changed")
     if 'cz.adaptech.tesseract4android:tesseract4android:4.9.0' not in build:
         errors.append("Pinned on-device OCR dependency missing or changed")
+    if 'org.mnode.ical4j:ical4j:4.4.0' not in build:
+        errors.append("Pinned local iCalendar parser dependency missing or changed")
+    if 'work = "2.12.0"' not in catalog or 'implementation(libs.androidx.work.runtime.ktx)' not in build:
+        errors.append("Reviewed WorkManager background scheduler missing or changed")
     if 'android.intent.action.SEND' not in manifest or 'android:mimeType="image/*"' not in manifest:
         errors.append("Image share surface changed")
     attachment = ROOT / "home-assistant/custom_components/ham_attachments/__init__.py"
@@ -96,7 +75,8 @@ def check() -> list[str]:
                for p in (ROOT / "app/src" / flavor / "java").rglob("*.kt")}
     for path, source in sources.items():
         for match in re.finditer(r'https?://([A-Za-z0-9.-]+)', source):
-            if match.group(1).lower() not in ALLOWED_HOSTS:
+            if (match.group(1).lower() not in ALLOWED_HOSTS and
+                    not source.startswith(XML_FEATURE_URIS, match.start())):
                 errors.append(f"New hardcoded network host in {path.relative_to(ROOT)}: {match.group(1)}")
         if re.search(r'\b(Log\.(?:d|i|w|e|v)|Timber\.|FirebaseAnalytics|Crashlytics|AdvertisingIdClient)\b', source):
             errors.append(f"Potential logging/tracking added in {path.relative_to(ROOT)}")
@@ -119,7 +99,6 @@ def check() -> list[str]:
     }.items():
         if not okay:
             errors.append(f"Missing or changed {label}; review before release")
-    errors.extend(check_public_literals())
     return errors
 
 

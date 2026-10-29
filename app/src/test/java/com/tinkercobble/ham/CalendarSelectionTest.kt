@@ -3,6 +3,8 @@ package com.tinkercobble.ham
 import com.tinkercobble.ham.data.CalendarPreferences
 import com.tinkercobble.ham.data.CalendarSelection
 import com.tinkercobble.ham.data.CalendarSource
+import com.tinkercobble.ham.data.AgendaEvent
+import com.tinkercobble.ham.data.CalendarProviderKind
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -47,5 +49,56 @@ class CalendarSelectionTest {
     @Test fun duplicateIdCannotResolveAmbiguously() {
         assertNull(CalendarSelection.resolveWritable(a.id, listOf(a, a.copy(name = "Renamed"))))
         assertEquals(1, CalendarSelection.writable(listOf(a, a)).size)
+    }
+
+    @Test fun privateIcsFeedRequiresExplicitSelectionEvenWhenSearchingHiddenCalendars() {
+        val id = "ics:00000000-0000-4000-8000-000000000001"
+        val event = AgendaEvent(id, "Synthetic ICS", "Synthetic event", "2026-11-12",
+            "2026-11-13", true, "", "", "synthetic-1", null, CalendarProviderKind.ICS)
+        assertTrue(CalendarSelection.visibleEvents(listOf(event), CalendarPreferences(), false,
+            false, emptySet(), includeHidden = true).isEmpty())
+        assertEquals(listOf(event), CalendarSelection.visibleEvents(listOf(event),
+            CalendarPreferences(), false, false, emptySet(), icsVisibleIds = setOf(id)))
+        assertNull(CalendarSelection.resolveWritable(id,
+            listOf(CalendarSource(id, "Synthetic ICS", 0, provider = CalendarProviderKind.ICS))))
+    }
+
+    @Test fun reusedAndroidRowIdCannotInheritSelectionOrWriteDefault() {
+        val old = CalendarSource("android:1", "Old", 7, "Android · old account",
+            provider = CalendarProviderKind.ANDROID, identityFingerprint = "a".repeat(64))
+        val replacement = CalendarSource("android:1", "New", 7, "Android · new account",
+            provider = CalendarProviderKind.ANDROID, identityFingerprint = "b".repeat(64))
+        val prefs = CalendarPreferences(favorites = setOf(old.id, a.id),
+            hidden = setOf(old.id), defaultId = old.id, recent = listOf(old.id, a.id),
+            colors = mapOf(old.id to "#123456", a.id to "#654321"))
+        val result = CalendarSelection.reconcileAndroidChoices(prefs, setOf(old.id),
+            listOf(replacement), listOf(old), mapOf(old.id to old.identityFingerprint!!))
+        assertTrue(result.visibleIds.isEmpty())
+        assertTrue(result.choicesRemoved)
+        assertNull(result.preferences.defaultId)
+        assertEquals(setOf(a.id), result.preferences.favorites)
+        assertEquals(listOf(a.id), result.preferences.recent)
+        assertEquals(mapOf(a.id to "#654321"), result.preferences.colors)
+        assertEquals(mapOf(replacement.id to replacement.identityFingerprint), result.fingerprints)
+    }
+
+    @Test fun legacyCacheCanBindMatchingAndroidCalendarButMissingCacheFailsClosed() {
+        val current = CalendarSource("android:7", "Synthetic", 7, "Android · account",
+            provider = CalendarProviderKind.ANDROID, identityFingerprint = "c".repeat(64))
+        val legacy = current.copy(identityFingerprint = null)
+        val prefs = CalendarPreferences(defaultId = current.id)
+        val accepted = CalendarSelection.reconcileAndroidChoices(prefs, setOf(current.id),
+            listOf(current), listOf(legacy), emptyMap())
+        assertEquals(current.id, accepted.preferences.defaultId)
+        assertEquals(setOf(current.id), accepted.visibleIds)
+        assertFalse(accepted.choicesRemoved)
+        val rejected = CalendarSelection.reconcileAndroidChoices(prefs, setOf(current.id),
+            listOf(current), emptyList(), emptyMap())
+        assertNull(rejected.preferences.defaultId)
+        assertTrue(rejected.visibleIds.isEmpty())
+        assertTrue(rejected.choicesRemoved)
+        assertEquals(mapOf(current.id to current.identityFingerprint),
+            CalendarSelection.parseAndroidFingerprints(CalendarSelection.encodeAndroidFingerprints(
+                accepted.fingerprints)))
     }
 }

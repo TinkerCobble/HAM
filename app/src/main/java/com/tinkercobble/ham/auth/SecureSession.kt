@@ -35,7 +35,9 @@ class SecureSession(context: Context) {
             .put("access", session.accessToken).put("expires", session.expiresAt)
             .put("client_id", session.clientId).toString()
         val data = cipher.iv + cipher.doFinal(json.toByteArray(Charsets.UTF_8))
-        prefs.edit().putString("session", Base64.encodeToString(data, Base64.NO_WRAP)).apply()
+        check(prefs.edit().putString("session", Base64.encodeToString(data, Base64.NO_WRAP)).commit()) {
+            "Could not securely save Home Assistant sign-in"
+        }
     }
     fun load(): Session? = try {
         val encoded = prefs.getString("session", null) ?: return null
@@ -46,5 +48,7 @@ class SecureSession(context: Context) {
         Session(value.getString("server"), value.getString("refresh"), value.getString("access"),
             value.getLong("expires"), value.optString("client_id", AuthIdentity.LEGACY_CLIENT_ID))
     } catch (_: Exception) { null }
-    fun clear() { prefs.edit().remove("session").apply() }
+    fun clear() {
+        check(prefs.edit().remove("session").commit()) { "Could not clear Home Assistant sign-in" }
+    }
 }

@@ -3,20 +3,80 @@ package com.tinkercobble.ham
 import com.tinkercobble.ham.data.AgendaEvent
 import com.tinkercobble.ham.data.CalendarDisplay
 import com.tinkercobble.ham.data.CalendarPreferences
+import com.tinkercobble.ham.data.CalendarSelection
+import com.tinkercobble.ham.data.EventGroups
+import com.tinkercobble.ham.data.CalendarProviderKind
 import com.tinkercobble.ham.data.CalendarSource
 import com.tinkercobble.ham.data.CalendarView
 import com.tinkercobble.ham.data.DateRange
 import com.tinkercobble.ham.data.RefreshGeneration
 import com.tinkercobble.ham.data.mergeCalendarRead
+import com.tinkercobble.ham.data.mergeCachedCalendarRead
+import com.tinkercobble.ham.data.pruneRemovedCalendars
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.LocalDate
 import java.time.ZoneId
 
 class CalendarDisplayTest {
+    @Test fun exactCrossProviderMirrorsStayAccessibleAsTwoRecords() {
+        val ha = event("calendar.alpha", "2026-10-27T10:00:00-04:00", "2026-10-27T11:00:00-04:00")
+            .copy(summary = "Shared event", description = "Same notes", location = "Room")
+        val android = ha.copy(calendarId = "android:23", calendarName = "Device copy",
+            start = "2026-10-27T14:00:00Z", end = "2026-10-27T15:00:00Z",
+            provider = CalendarProviderKind.ANDROID)
+        assertEquals(listOf(listOf(ha, android)), EventGroups.display(listOf(ha, android)))
+        assertEquals(1, EventGroups.display(listOf(ha, android.copy(description = "Different notes"))).size)
+        assertEquals(2, EventGroups.display(listOf(ha, android.copy(location = "Different room"))).size)
+        assertEquals(2, EventGroups.display(listOf(ha, ha.copy(calendarId = "calendar.beta"))).size)
+        assertEquals(3, EventGroups.display(listOf(ha, android, android.copy(calendarId = "android:24"))).size)
+        val dav = android.copy(calendarId = "dav:synthetic", provider = CalendarProviderKind.CALDAV)
+        assertEquals(2, EventGroups.display(listOf(ha, dav)).size)
+        assertEquals(2, EventGroups.display(listOf(android, dav)).size)
+    }
+
+    @Test fun removedAndroidCalendarClearsOnlyItsOwnChoices() {
+        val prefs = CalendarPreferences(defaultId = "android:23")
+        val (clean, selected) = CalendarSelection.pruneMissingAndroidChoices(prefs,
+            setOf("android:23", "android:24"), setOf("android:24"))
+        assertEquals(null, clean.defaultId)
+        assertEquals(setOf("android:24"), selected)
+        val ha = CalendarPreferences(defaultId = "calendar.family")
+        assertEquals("calendar.family", CalendarSelection.pruneMissingAndroidChoices(ha,
+            setOf("android:23"), emptySet()).first.defaultId)
+    }
+
     private val zone = ZoneId.of("America/New_York")
     private fun event(id: String, start: String, end: String, allDay: Boolean = false) =
         AgendaEvent(id, id, "Event", start, end, allDay, "", "", null, null)
+
+    @Test fun searchNeverRevealsDeselectedOrRevokedAndroidEvents() {
+        val ha = event("calendar.shared", "2026-10-27", "2026-10-28", true)
+        val android = event("android:23", "2026-10-27", "2026-10-28", true)
+            .copy(provider = CalendarProviderKind.ANDROID)
+        val hiddenHa = event("calendar.hidden", "2026-10-27", "2026-10-28", true)
+        val events = listOf(ha, android, hiddenHa)
+        val prefs = CalendarPreferences(hidden = setOf(hiddenHa.calendarId))
+        fun shown(enabled: Boolean, granted: Boolean, ids: Set<String>, includeHidden: Boolean) =
+            CalendarSelection.visibleEvents(events, prefs, enabled, granted, ids, includeHidden)
+        assertEquals(listOf(ha), shown(true, true, emptySet(), false))
+        assertEquals(listOf(ha, hiddenHa), shown(true, true, emptySet(), true))
+        assertEquals(listOf(ha, android), shown(true, true, setOf(android.calendarId), false))
+        assertEquals(listOf(ha), shown(true, false, setOf(android.calendarId), false))
+        assertEquals(listOf(ha, hiddenHa), shown(true, false, setOf(android.calendarId), true))
+        assertEquals(listOf(ha), shown(false, true, setOf(android.calendarId), false))
+    }
+
+    @Test fun cachedDavEventsRequireAnExplicitSelectedCollection() {
+        val dav = event("dav:00000000-0000-0000-0000-000000000000:123456789012345678901234",
+            "2026-10-27", "2026-10-28", true).copy(provider = CalendarProviderKind.CALDAV)
+        val hidden = CalendarSelection.visibleEvents(listOf(dav), CalendarPreferences(),
+            true, true, emptySet(), includeHidden = true)
+        assertTrue(hidden.isEmpty())
+        val selected = CalendarSelection.visibleEvents(listOf(dav), CalendarPreferences(),
+            true, true, emptySet(), davVisibleIds = setOf(dav.calendarId))
+        assertEquals(listOf(dav), selected)
+    }
 
     @Test fun rollingRangesAndSwipesKeepTodayAsAnchor() {
         val today = LocalDate.of(2026, 10, 14)
@@ -81,5 +141,29 @@ class CalendarDisplayTest {
         val second = generation.next()
         assertFalse(generation.accepts(first))
         assertTrue(generation.accepts(second))
+    }
+
+    @Test fun cachedRefreshReplacesOnlySuccessfulSourceAndRequestedDates() {
+        val day = LocalDate.of(2026, 10, 14)
+        val range = DateRange(day, day.plusDays(1))
+        val old = event("calendar.ok", "2026-10-14", "2026-10-15", true)
+        val elsewhere = event("calendar.ok", "2026-10-18", "2026-10-19", true)
+        val failed = event("calendar.failed", "2026-10-14", "2026-10-15", true)
+        val fresh = event("calendar.ok", "2026-10-14T12:00:00Z", "2026-10-14T13:00:00Z")
+        val result = mergeCachedCalendarRead(listOf(old, elsewhere, failed), listOf(fresh),
+            setOf("calendar.ok"), range)
+        assertEquals(setOf(elsewhere, failed, fresh), result.toSet())
+        assertEquals(setOf(elsewhere, failed), mergeCachedCalendarRead(result, emptyList(),
+            setOf("calendar.ok"), range).toSet())
+    }
+
+    @Test fun confirmedCalendarDeletionPrunesOnlyThatProvidersCachedEvents() {
+        val removed = event("calendar.removed", "2026-10-14", "2026-10-15", true)
+        val retained = event("calendar.kept", "2026-10-14", "2026-10-15", true)
+        val android = event("android:1", "2026-10-14", "2026-10-15", true)
+            .copy(provider = CalendarProviderKind.ANDROID)
+        assertEquals(listOf(retained, android), pruneRemovedCalendars(
+            listOf(removed, retained, android), CalendarProviderKind.HOME_ASSISTANT,
+            setOf("calendar.kept")))
     }
 }
