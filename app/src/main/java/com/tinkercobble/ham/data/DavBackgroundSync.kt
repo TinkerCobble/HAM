@@ -18,6 +18,7 @@ object DavBackgroundSync {
 
     fun scheduleIfQueued(context: Context, newMutation: Boolean,
         continuation: Boolean = false): Operation? {
+        if (OfflineMode.enabled(context)) return null
         if (PendingDavMutations(context).list().none { it.state == DavPendingState.QUEUED }) return null
         val request = OneTimeWorkRequestBuilder<DavSyncWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -34,6 +35,7 @@ object DavBackgroundSync {
 class DavSyncWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
     override fun doWork(): Result {
         return try {
+            if (OfflineMode.enabled(applicationContext)) return Result.success()
             val queue = PendingDavMutations(applicationContext)
             val accounts = DavAccounts(applicationContext)
             val ids = queue.list().filter { it.state == DavPendingState.QUEUED }
@@ -41,10 +43,11 @@ class DavSyncWorker(context: Context, parameters: WorkerParameters) : Worker(con
             var networkFailure = false
             for (id in ids) {
                 if (isStopped) return Result.retry()
+                if (OfflineMode.enabled(applicationContext)) return Result.success()
                 val account = accounts.account(id) ?: continue
                 val result = DavMutationDispatcher.flush(account, queue, maxItems = 2,
                     accountStillCurrent = { accounts.account(id) == account },
-                    shouldContinue = { !isStopped })
+                    shouldContinue = { !isStopped && !OfflineMode.enabled(applicationContext) })
                 networkFailure = networkFailure || result.networkFailure
             }
             if (isStopped) return Result.retry()

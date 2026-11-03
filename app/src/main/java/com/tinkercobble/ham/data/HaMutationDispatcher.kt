@@ -8,7 +8,9 @@ import java.time.LocalDate
 import java.util.UUID
 
 data class HaFlushResult(val confirmed: Int, val conflicts: Int,
-    val networkFailure: Boolean, val needsReview: Int)
+    val networkFailure: Boolean, val needsReview: Int,
+    val awaitingExact: Int = 0, val awaitingSimilar: Int = 0,
+    val awaitingAbsent: Int = 0)
 
 /** Serializes foreground and worker delivery. Unknown sends are never replayed automatically. */
 object HaMutationDispatcher {
@@ -28,7 +30,7 @@ object HaMutationDispatcher {
         return JSONObject().put("id", 1).put("type", "calendar/event/update")
             .put("entity_id", change.sourceId).put("uid", change.original.uid)
             .put("event", JSONObject().put("summary", target.summary)
-                .put("start", target.start).put("end", target.end)
+                .put("dtstart", target.start).put("dtend", target.end)
                 .put("description", target.description).put("location", target.location))
     }
 
@@ -67,11 +69,15 @@ object HaMutationDispatcher {
         var confirmed = 0
         var conflicts = 0
         var needsReview = 0
+        var awaitingExact = 0
+        var awaitingSimilar = 0
+        var awaitingAbsent = 0
         for (change in queue.list().filter { it.state != HaPendingState.CONFLICT &&
             (onlyId == null || it.id == onlyId) &&
             (reviewedRetryId == null || it.id == reviewedRetryId &&
                 it.state == HaPendingState.AWAITING_CONFIRMATION) }.take(maxItems)) {
-            if (!shouldContinue()) return@withLock HaFlushResult(confirmed, conflicts, true, needsReview)
+            if (!shouldContinue()) return@withLock HaFlushResult(confirmed, conflicts, true,
+                needsReview, awaitingExact, awaitingSimilar, awaitingAbsent)
             if (transport.sessionBinding() != change.sessionBinding) {
                 queue.mark(change.id, HaPendingState.CONFLICT)
                 conflicts++
@@ -92,7 +98,8 @@ object HaMutationDispatcher {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                return@withLock HaFlushResult(confirmed, conflicts, true, needsReview)
+                return@withLock HaFlushResult(confirmed, conflicts, true,
+                    needsReview, awaitingExact, awaitingSimilar, awaitingAbsent)
             }
             if (change.operation == HaOperation.CREATE) {
                 val matches = live.filter {
@@ -108,13 +115,21 @@ object HaMutationDispatcher {
                     if (change.state == HaPendingState.QUEUED) {
                         queue.mark(change.id, HaPendingState.CONFLICT)
                         conflicts++
-                    } else needsReview++
+                    } else {
+                        needsReview++
+                        if (change.state == HaPendingState.AWAITING_CONFIRMATION) {
+                            if (matches.size == 1 &&
+                                HomeAssistantCalendarMutation.createdVisible(change.original, live))
+                                awaitingExact++ else awaitingSimilar++
+                        }
+                    }
                     continue
                 }
                 if (change.state == HaPendingState.ACCEPTED) continue
                 if (change.state == HaPendingState.AWAITING_CONFIRMATION &&
                     reviewedRetryId != change.id) {
                     needsReview++
+                    awaitingAbsent++
                     continue
                 }
                 val command = try {
@@ -243,6 +258,7 @@ object HaMutationDispatcher {
                 conflicts++
             }
         }
-        HaFlushResult(confirmed, conflicts, false, needsReview)
+        HaFlushResult(confirmed, conflicts, false, needsReview,
+            awaitingExact, awaitingSimilar, awaitingAbsent)
     }
 }

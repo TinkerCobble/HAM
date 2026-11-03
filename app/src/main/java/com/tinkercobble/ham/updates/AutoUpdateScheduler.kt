@@ -13,6 +13,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import java.util.concurrent.TimeUnit
+import com.tinkercobble.ham.data.OfflineMode
 
 /** Automatic installs run only on unmetered networks after HAM leaves the foreground. */
 object AutoUpdateScheduler {
@@ -86,6 +87,7 @@ object AutoUpdateScheduler {
 class AutoUpdateWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
         val context = applicationContext
+        if (OfflineMode.enabled(context)) return Result.success()
         if (Build.VERSION.SDK_INT < 31 || !AutoUpdateScheduler.isEnabled(context) ||
             !UpdateService.canInstall(context))
             return Result.success()
@@ -94,7 +96,7 @@ class AutoUpdateWorker(context: Context, parameters: WorkerParameters) : Corouti
         if (!AutoUpdateScheduler.canTrySilently(context, update.versionCode)) return Result.success()
         return try {
             val file = UpdateService.downloadAndVerify(context, update) { }
-            if (isStopped || !AutoUpdateScheduler.isEnabled(context) ||
+            if (isStopped || OfflineMode.enabled(context) || !AutoUpdateScheduler.isEnabled(context) ||
                 AutoUpdateScheduler.isForeground()) return Result.retry()
             try {
                 UpdateService.commitSelfUpdate(context, file, update)

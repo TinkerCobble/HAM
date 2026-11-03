@@ -13,6 +13,34 @@ class CalendarSelectionTest {
     private val b = CalendarSource("calendar.voice_appointments", "Appointments", 1, "Provider B")
     private val readOnly = CalendarSource("calendar.scouts", "Scouts", 0)
 
+    @Test fun newHomeAssistantCalendarStartsHiddenWithoutChangingExistingChoices() {
+        val prefs = CalendarPreferences(favorites = setOf(a.id), defaultId = a.id,
+            hidden = setOf(readOnly.id))
+        val next = CalendarSelection.hideNewHomeAssistantCalendars(prefs,
+            setOf(a.id, b.id, readOnly.id), setOf(a.id, readOnly.id), emptySet())
+        assertEquals(setOf(b.id, readOnly.id), next.hidden)
+        assertEquals(a.id, next.defaultId)
+        assertEquals(prefs.favorites, next.favorites)
+        assertEquals(next, CalendarSelection.hideNewHomeAssistantCalendars(next,
+            setOf(a.id, b.id, readOnly.id), setOf(a.id, b.id, readOnly.id), emptySet()))
+    }
+
+    @Test fun legacyCachedHomeAssistantChoicesSurviveFirstDiscovery() {
+        val prefs = CalendarPreferences(defaultId = a.id)
+        val next = CalendarSelection.hideNewHomeAssistantCalendars(prefs,
+            setOf(a.id, b.id), null, setOf(a.id))
+        assertEquals(setOf(b.id), next.hidden)
+        assertEquals(a.id, next.defaultId)
+        assertEquals(setOf(a.id, b.id), CalendarSelection.hideNewHomeAssistantCalendars(
+            CalendarPreferences(), setOf(a.id, b.id), null, emptySet()).hidden)
+        val upgraded = CalendarSelection.hideNewHomeAssistantCalendars(prefs,
+            setOf(a.id, b.id), null, emptySet(), preserveLegacySession = true)
+        assertTrue(upgraded.hidden.isEmpty())
+        assertEquals(a.id, upgraded.defaultId)
+        assertEquals(setOf(readOnly.id), CalendarSelection.hideNewHomeAssistantCalendars(
+            upgraded, setOf(a.id, b.id, readOnly.id), setOf(a.id, b.id), emptySet()).hidden)
+    }
+
     @Test fun sameNamesRemainSeparateAndOnlyExactIdResolves() {
         val list = listOf(a, b, readOnly)
         assertEquals(listOf(a, b), CalendarSelection.writable(list))
@@ -22,6 +50,15 @@ class CalendarSelectionTest {
         assertEquals(listOf(a, b), CalendarSelection.search(list, "Appointments"))
         assertEquals(listOf(b), CalendarSelection.search(list, "voice_appointments"))
         assertEquals(listOf(b), CalendarSelection.search(list, "Provider B"))
+    }
+
+    @Test fun hiddenOrReadOnlyDestinationCannotBeResolvedForWriting() {
+        assertNull(CalendarSelection.resolveVisibleWritable(b.id, listOf(a, b),
+            { it.id == a.id }))
+        assertEquals(b, CalendarSelection.resolveVisibleWritable(b.id, listOf(a, b),
+            { it.id == b.id }))
+        assertNull(CalendarSelection.resolveVisibleWritable(readOnly.id, listOf(readOnly),
+            { true }))
     }
 
     @Test fun permissionAndRefreshChangesNeverSwitchToNamesake() {

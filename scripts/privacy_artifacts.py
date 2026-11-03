@@ -20,7 +20,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LOCK = ROOT / "release/privacy-artifacts.json"
 BASE = "https://tinkercobble.com"
-PAGE_PATHS = ("ham/", "ham/privacy/", "ham/terms/", "ham/dev-update.json", "styles.css")
+PAGE_PATHS = ("ham/", "ham/privacy/", "ham/terms/", "styles.css")
 MAX_DOWNLOAD = 80 * 1024 * 1024
 MAX_UNCOMPRESSED = 200 * 1024 * 1024
 PATTERNS = {
@@ -53,6 +53,16 @@ def checksum_paths(lock: dict) -> tuple[str, str]:
             raise ValueError("Artifact is outside the approved HAM download path")
         paths.append(urllib.parse.urlsplit(url).path.lstrip("/") + ".sha256")
     return paths[0], paths[1]
+
+
+def feed_path(lock: dict) -> tuple[str, str]:
+    """Bind the feed and channel to the exact Android package being audited."""
+    package = lock["package"]
+    if package == "com.tinkercobble.ham":
+        return "ham/update.json", "ham"
+    if package == "com.tinkercobble.ham.dev":
+        return "ham/dev-update.json", "dev"
+    raise ValueError("Release lock names an unsupported HAM package")
 
 
 def check_bytes(label: str, data: bytes, errors: list[str], *, scan_network: bool = True) -> None:
@@ -98,6 +108,7 @@ def check_zip(label: str, data: bytes, errors: list[str], *, apk: bool) -> None:
 
 def audit(apk: bytes, source: bytes, pages: dict[str, bytes], lock: dict) -> list[str]:
     errors: list[str] = []
+    feed_name, expected_channel = feed_path(lock)
     for label, data, expected in (("APK", apk, lock["apk_sha256"]), ("source ZIP", source, lock["source_sha256"])):
         if hashlib.sha256(data).hexdigest() != expected.lower():
             errors.append(f"{label}: SHA-256 differs from pinned release")
@@ -106,7 +117,7 @@ def audit(apk: bytes, source: bytes, pages: dict[str, bytes], lock: dict) -> lis
         except zipfile.BadZipFile:
             errors.append(f"{label}: invalid ZIP")
     sidecars = checksum_paths(lock)
-    for path in PAGE_PATHS + sidecars:
+    for path in PAGE_PATHS + (feed_name,) + sidecars:
         data = pages.get(path)
         if not data:
             errors.append(f"Website {path}: missing (check skipped)")
@@ -117,15 +128,21 @@ def audit(apk: bytes, source: bytes, pages: dict[str, bytes], lock: dict) -> lis
         errors.append("Website HAM page: download link does not match pinned APK")
     if lock["source_url"].removeprefix(BASE).encode() not in product:
         errors.append("Website HAM page: source link does not match pinned archive")
-    feed = pages.get("ham/dev-update.json", b"")
+    feed = pages.get(feed_name, b"")
     try:
         update = json.loads(feed)
-        if update.get("apkUrl") != lock["apk_url"] or update.get("sha256", "").lower() != lock["apk_sha256"].lower():
-            errors.append("DEV update feed: URL or checksum differs from pinned APK")
-        if update.get("versionCode") != lock["version_code"] or update.get("packageName") != lock["package"]:
-            errors.append("DEV update feed: package or version differs from pinned release")
+        if not isinstance(update, dict):
+            raise ValueError("Update feed must be an object")
+        digest = update.get("sha256")
+        if (update.get("apkUrl") != lock["apk_url"] or
+                not isinstance(digest, str) or digest.lower() != lock["apk_sha256"].lower()):
+            errors.append("HAM update feed: URL or checksum differs from pinned APK")
+        if (update.get("versionCode") != lock["version_code"] or
+                update.get("packageName") != lock["package"] or
+                update.get("channel") != expected_channel):
+            errors.append("HAM update feed: package, channel, or version differs from pinned release")
     except (ValueError, TypeError):
-        errors.append("DEV update feed: invalid JSON")
+        errors.append("HAM update feed: invalid JSON")
     for path in ("ham/privacy/", "ham/terms/"):
         if b"HAM" not in pages.get(path, b"") or b"mailto:" not in pages.get(path, b""):
             errors.append(f"Website {path}: legal/contact content missing")
@@ -143,13 +160,19 @@ def main() -> int:
     parser.add_argument("--apk", type=pathlib.Path)
     parser.add_argument("--source-zip", type=pathlib.Path)
     parser.add_argument("--website-dir", type=pathlib.Path)
+    parser.add_argument("--lock", type=pathlib.Path,
+                        help="candidate lock for --staged; live --public always uses the committed lock")
     args = parser.parse_args()
     try:
-        lock = json.loads(LOCK.read_text(encoding="utf-8"))
+        if args.public and args.lock is not None:
+            parser.error("--public uses the committed release lock")
+        lock = json.loads((args.lock or LOCK).read_text(encoding="utf-8"))
+        feed_name, _ = feed_path(lock)
+        page_paths = PAGE_PATHS + (feed_name,) + checksum_paths(lock)
         if args.public:
             apk = fetch(lock["apk_url"])
             source = fetch(lock["source_url"])
-            pages = {path: fetch(f"{BASE}/{path}") for path in PAGE_PATHS + checksum_paths(lock)}
+            pages = {path: fetch(f"{BASE}/{path}") for path in page_paths}
         else:
             if not all((args.apk, args.source_zip, args.website_dir)):
                 parser.error("--staged requires --apk, --source-zip, and --website-dir")
@@ -157,7 +180,7 @@ def main() -> int:
             source = args.source_zip.read_bytes()
             pages = {path: (args.website_dir / path / "index.html" if path.endswith("/")
                             else args.website_dir / path).read_bytes()
-                     for path in PAGE_PATHS + checksum_paths(lock)}
+                     for path in page_paths}
         problems = audit(apk, source, pages, lock)
     except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
         print(f"FAIL: privacy preflight could not complete ({type(exc).__name__})")
@@ -166,7 +189,7 @@ def main() -> int:
         print("FAIL:", problem)
     if problems:
         return 1
-    print("Exact APK, source ZIP, HAM pages, and DEV feed passed the artifact preflight; manual review remains required.")
+    print("Exact APK, source ZIP, HAM pages, and update feed passed the artifact preflight; manual review remains required.")
     return 0
 
 

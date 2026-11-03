@@ -325,8 +325,8 @@ class PendingHaMutationsInstrumentedTest {
         transport.onSend = { command ->
             assertEquals("calendar/event/create", command.getString("type"))
             val event = command.getJSONObject("event")
-            assertEquals("2026-11-12", event.getString("start"))
-            assertEquals("2026-11-16", event.getString("end"))
+            assertEquals("2026-11-12", event.getString("dtstart"))
+            assertEquals("2026-11-16", event.getString("dtend"))
             transport.live = listOf(change.original.copy(uid = "provider-multi-day-uid"))
         }
         try {
@@ -370,8 +370,31 @@ class PendingHaMutationsInstrumentedTest {
             HaMutationDispatcher.flush(queue, transport, onlyId = change.id)
             assertEquals(HaPendingState.AWAITING_CONFIRMATION,
                 queue.list().single { it.id == change.id }.state)
-            assertEquals(1, HaMutationDispatcher.flush(queue, transport, onlyId = change.id).needsReview)
+            val check = HaMutationDispatcher.flush(queue, transport, onlyId = change.id)
+            assertEquals(1, check.needsReview)
+            assertEquals(1, check.awaitingAbsent)
             assertEquals(1, transport.sends)
+        } finally { queue.discard(change.id) }
+    }
+
+    @Test fun uncertainCreateCheckReportsExactOrSimilarWithoutResending() = runBlocking {
+        val queue = queue()
+        val change = createItem()
+        val transport = FakeTransport(binding, source, emptyList())
+        try {
+            queue.enqueue(change.copy(state = HaPendingState.AWAITING_CONFIRMATION))
+            transport.live = listOf(change.original.copy(uid = "synthetic-provider-uid"))
+            val exact = HaMutationDispatcher.flush(queue, transport, onlyId = change.id)
+            assertEquals(1, exact.awaitingExact)
+            assertEquals(0, exact.awaitingSimilar)
+            assertEquals(0, transport.sends)
+            transport.live = listOf(change.original.copy(uid = "synthetic-provider-uid",
+                description = "Different synthetic detail"))
+            val similar = HaMutationDispatcher.flush(queue, transport, onlyId = change.id)
+            assertEquals(0, similar.awaitingExact)
+            assertEquals(1, similar.awaitingSimilar)
+            assertEquals(0, transport.sends)
+            assertEquals(HaPendingState.AWAITING_CONFIRMATION, queue.list().single().state)
         } finally { queue.discard(change.id) }
     }
 
@@ -470,15 +493,15 @@ class PendingHaMutationsInstrumentedTest {
         val command = HomeAssistantCalendarMutation.updateCommand(source, original,
             listOf(original), "Moved synthetic event", newDate = LocalDate.parse("2026-12-02"))
         val event = command.getJSONObject("event")
-        assertEquals("2026-12-02", event.getString("start"))
-        assertEquals("2026-12-05", event.getString("end"))
-        val target = HaTarget(event.getString("summary"), event.getString("start"),
-            event.getString("end"), event.getString("description"), event.getString("location"))
+        assertEquals("2026-12-02", event.getString("dtstart"))
+        assertEquals("2026-12-05", event.getString("dtend"))
+        val target = HaTarget(event.getString("summary"), event.getString("dtstart"),
+            event.getString("dtend"), event.getString("description"), event.getString("location"))
         val change = PendingHaMutation(UUID.randomUUID(), binding, source.id, original,
             HaOperation.UPDATE, target)
         val transport = FakeTransport(binding, source, listOf(original)).apply { rangeAware = true }
         transport.onSend = { sent ->
-            assertEquals(target.start, sent.getJSONObject("event").getString("start"))
+            assertEquals(target.start, sent.getJSONObject("event").getString("dtstart"))
             transport.live = listOf(original.copy(summary = target.summary,
                 start = target.start, end = target.end))
         }

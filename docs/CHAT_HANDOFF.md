@@ -1,5 +1,11 @@
 # Public HAM — Chat and Codex handoff
 
+## Code146 audited source candidate — 2026-11-03
+
+- **Source:** standalone public `codex/ham-code146-public` branch, based on the existing public repository. It copies only generic tracked application/build/license material from the privately verified code146 source; no private Git history is merged.
+- **Checks:** 169 JVM tests, release build/lint, source privacy and current/history Gitleaks passed locally. Clean private and public unsigned release APKs matched byte for byte. The exact signed code146 APK was installed Note8 first, then Pixel and tablet in place with signer/package/install-history and pulled-hash verification.
+- **Release:** public source commit, source ZIP, GitHub CI, website artifact checks, immutable upload, anonymous read-back and feed-last deployment remain pending at this checkpoint. The live public download/feed remain code131 until those checks pass. Wider feature/provider acceptance remains open.
+
 ## Code131 physical Pixel update acceptance — 2026-10-29
 
 - **Observed:** with HAM backgrounded on unmetered Wi-Fi, its scheduled worker found the live code131 feed and initiated Android installation. Pixel required owner Play Protect Scan app and Install app taps. Android records HAM as installer; installed code131 SHA-256 `EBB67BA83ED1028BB9054B24CB0DB65B0148DC7627FA34392377DA90E1523EF6`, signer and unchanged first-install time matched Note8/staging/live. HAM process ran afterward with no bounded fresh fatal marker.

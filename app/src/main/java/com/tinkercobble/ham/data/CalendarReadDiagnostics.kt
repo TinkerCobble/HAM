@@ -9,6 +9,9 @@ enum class CalendarReadError(val label: String) {
     PERMISSION("Calendar permission needs review"),
     UNSUPPORTED("Calendar format is not fully supported"),
     PARTIAL("Some calendar items could not be read"),
+    MISSING_DATA("Some CalDAV item data was missing"),
+    UNPARSEABLE_DATA("Some CalDAV item data could not be parsed"),
+    UNVERIFIED_METADATA("Some CalDAV item metadata could not be verified"),
     UNAVAILABLE("Calendar could not be reached"),
     OTHER("Calendar read failed");
 
@@ -17,6 +20,9 @@ enum class CalendarReadError(val label: String) {
         fun from(message: String): CalendarReadError {
             val value = message.lowercase()
             return when {
+                "caldav item data was missing" in value -> MISSING_DATA
+                "caldav item data could not be parsed" in value -> UNPARSEABLE_DATA
+                "caldav item metadata could not be verified" in value -> UNVERIFIED_METADATA
                 listOf("auth", "sign-in", "unauthor", "token", "401").any { it in value } -> AUTH
                 "permission" in value -> PERMISSION
                 "unsupported" in value || "recurrence" in value -> UNSUPPORTED

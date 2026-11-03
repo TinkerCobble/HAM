@@ -15,7 +15,17 @@ import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import java.time.temporal.Temporal
 
-data class IcsRead(val events: List<AgendaEvent>, val unsupportedRecurring: Int)
+enum class RecurrenceIssue(val label: String) {
+    NO_RANGE("No bounded read range"),
+    EXPANSION("Recurrence rule could not be expanded"),
+    RANGE_OVERRIDE("This-and-future change"),
+    INVALID_OVERRIDE("Changed occurrence could not be used"),
+    UNMATCHED_OVERRIDE("Changed occurrence has no matching series"),
+}
+
+data class IcsRead(val events: List<AgendaEvent>, val unsupportedRecurring: Int,
+    val recurrenceIssues: Map<RecurrenceIssue, Int> = emptyMap(),
+    val detachedOccurrenceKeys: Set<Pair<String, String>> = emptySet())
 
 /** Parse a bounded calendar-data property. Never silently present a recurrence master as a single event. */
 object IcsEventParser {
@@ -25,6 +35,12 @@ object IcsEventParser {
         val calendar = CalendarBuilder().build(bytes.inputStream())
         val events = mutableListOf<AgendaEvent>()
         var recurring = 0
+        val recurrenceIssues = mutableMapOf<RecurrenceIssue, Int>()
+        val detachedOccurrenceKeys = mutableSetOf<Pair<String, String>>()
+        fun unsupported(reason: RecurrenceIssue) {
+            recurring++
+            recurrenceIssues[reason] = (recurrenceIssues[reason] ?: 0) + 1
+        }
         val components = calendar.getComponents<net.fortuna.ical4j.model.component.CalendarComponent>()
             .filterIsInstance<VEvent>()
         require(components.size <= 2000) { "Calendar has too many events" }
@@ -38,9 +54,9 @@ object IcsEventParser {
             val endValue = end(event, startValue) ?: continue
             val uid = value(event, "UID")
             val matching = overrides.filter { uid != null && value(it, "UID") == uid }
-            if (repeats && range == null) { recurring++; continue }
+            if (repeats && range == null) { unsupported(RecurrenceIssue.NO_RANGE); continue }
             val periods = if (repeats) try { consumed(event, startValue, range!!) }
-                catch (_: Exception) { recurring++; continue }
+                catch (_: Exception) { unsupported(RecurrenceIssue.EXPANSION); continue }
                 else listOf(startValue to endValue)
             check(periods.size <= 2000) { "Too many event occurrences" }
             val replacementIds = mutableSetOf<String>()
@@ -48,11 +64,20 @@ object IcsEventParser {
             for (override in matching) {
                 val recurrence = override.getProperty<RecurrenceId<Temporal>>("RECURRENCE-ID")
                     .orElse(null)
-                if (recurrence == null || recurrence.getParameter<net.fortuna.ical4j.model.Parameter>("RANGE").isPresent) {
+                if (recurrence == null) {
+                    unsupported(RecurrenceIssue.INVALID_OVERRIDE)
+                    handled += override
+                    continue
+                }
+                if (recurrence.getParameter<net.fortuna.ical4j.model.Parameter>("RANGE").isPresent) {
+                    unsupported(RecurrenceIssue.RANGE_OVERRIDE)
+                    handled += override
                     continue
                 }
                 val id = runCatching { dateText(recurrence.date) }.getOrNull()
                 if (id == null || !replacementIds.add(id)) {
+                    unsupported(RecurrenceIssue.INVALID_OVERRIDE)
+                    handled += override
                     continue
                 }
                 replacements += override to id
@@ -74,13 +99,40 @@ object IcsEventParser {
                         inheritedEnd(startValue, endValue, movedStart)
                     }
                 }
-                if (overrideStart == null || overrideEnd == null) { recurring++; continue }
+                if (overrideStart == null || overrideEnd == null) {
+                    unsupported(RecurrenceIssue.INVALID_OVERRIDE)
+                    continue
+                }
                 events += agenda(source, override, overrideStart, overrideEnd, id, event)
             }
             check(events.size <= 5000) { "Calendar has too many occurrences" }
         }
-        recurring += overrides.count { it !in handled }
-        return IcsRead(events, recurring)
+        // A bounded CalDAV query may return a moved occurrence without its series master.
+        // Its explicit start and end are sufficient to show it, but never infer missing
+        // fields or a duration from a master that was not returned.
+        overrides.filter { it !in handled }.forEach { override ->
+            if (cancelled(override)) return@forEach
+            if (override.getProperty<RecurrenceId<Temporal>>("RECURRENCE-ID")
+                    .orElse(null)?.getParameter<net.fortuna.ical4j.model.Parameter>("RANGE")
+                    ?.isPresent == true) {
+                unsupported(RecurrenceIssue.RANGE_OVERRIDE)
+                return@forEach
+            }
+            val id = override.getProperty<RecurrenceId<Temporal>>("RECURRENCE-ID")
+                .orElse(null)?.let { runCatching { dateText(it.date) }.getOrNull() }
+            val start = override.getStartDate<Temporal>().orElse(null)?.date
+            val explicitEnd = if (override.getProperty<Property>("DTEND").isPresent ||
+                override.getProperty<Property>("DURATION").isPresent) {
+                start?.let { end(override, it) }
+            } else null
+            if (id == null || start == null || explicitEnd == null) {
+                unsupported(RecurrenceIssue.UNMATCHED_OVERRIDE)
+            } else {
+                events += agenda(source, override, start, explicitEnd, id)
+                value(override, "UID")?.let { detachedOccurrenceKeys += it to id }
+            }
+        }
+        return IcsRead(events, recurring, recurrenceIssues, detachedOccurrenceKeys)
     }
 
     private fun value(event: VEvent, name: String): String? =

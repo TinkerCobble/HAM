@@ -3,6 +3,7 @@ package com.tinkercobble.ham
 import com.tinkercobble.ham.data.CalendarSource
 import com.tinkercobble.ham.data.IcsEventParser
 import com.tinkercobble.ham.data.DateRange
+import com.tinkercobble.ham.data.RecurrenceIssue
 import net.fortuna.ical4j.data.CalendarBuilder
 import net.fortuna.ical4j.model.Period
 import net.fortuna.ical4j.model.component.VEvent
@@ -236,5 +237,48 @@ END:VCALENDAR
         val read = IcsEventParser.parse(ics.toByteArray(), source,
             DateRange(LocalDate.parse("2026-11-01"), LocalDate.parse("2026-12-01")))
         assertEquals(1, read.unsupportedRecurring)
+        assertEquals(1, read.recurrenceIssues[RecurrenceIssue.RANGE_OVERRIDE])
+    }
+
+    @Test fun detachedOccurrenceWithExplicitTimesIsVisibleWithoutMaster() {
+        val ics = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//HAM Test//EN
+BEGIN:VEVENT
+UID:detached@example.test
+DTSTAMP:20261027T120000Z
+RECURRENCE-ID:20261102T140000Z
+DTSTART:20261103T180000Z
+DTEND:20261103T190000Z
+SUMMARY:Fictional moved event
+END:VEVENT
+END:VCALENDAR
+""".trimIndent().replace("\n", "\r\n")
+        val read = IcsEventParser.parse(ics.toByteArray(), source,
+            DateRange(LocalDate.parse("2026-11-01"), LocalDate.parse("2026-11-05")))
+        assertEquals(0, read.unsupportedRecurring)
+        assertEquals(1, read.events.size)
+        assertEquals("2026-11-03T18:00Z", read.events.single().start)
+        assertEquals("2026-11-02T14:00Z", read.events.single().recurrenceId)
+    }
+
+    @Test fun detachedOccurrenceWithoutEndStillWarns() {
+        val ics = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//HAM Test//EN
+BEGIN:VEVENT
+UID:detached-incomplete@example.test
+DTSTAMP:20261027T120000Z
+RECURRENCE-ID:20261102T140000Z
+DTSTART:20261103T180000Z
+SUMMARY:Fictional incomplete event
+END:VEVENT
+END:VCALENDAR
+""".trimIndent().replace("\n", "\r\n")
+        val read = IcsEventParser.parse(ics.toByteArray(), source,
+            DateRange(LocalDate.parse("2026-11-01"), LocalDate.parse("2026-11-05")))
+        assertEquals(1, read.unsupportedRecurring)
+        assertEquals(RecurrenceIssue.UNMATCHED_OVERRIDE,
+            read.recurrenceIssues.keys.single())
     }
 }

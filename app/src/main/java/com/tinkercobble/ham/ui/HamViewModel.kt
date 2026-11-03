@@ -69,6 +69,7 @@ import com.tinkercobble.ham.data.HaMutationDispatcher
 import com.tinkercobble.ham.data.HaOperation
 import com.tinkercobble.ham.data.HaPendingState
 import com.tinkercobble.ham.data.HaTarget
+import com.tinkercobble.ham.data.OfflineMode
 import com.tinkercobble.ham.data.PendingHaMutation
 import com.tinkercobble.ham.data.PendingHaMutations
 import com.tinkercobble.ham.data.TodoEntry
@@ -108,6 +109,43 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     private fun updateWidget() { runCatching { HamAgendaWidget.requestUpdate(getApplication()) } }
     private val client = HomeAssistantClient(application)
     private val calendarStore = CalendarPreferenceStore(application)
+    private val weekStartStore = com.tinkercobble.ham.data.WeekStartPreferenceStore(application)
+    var offline = androidx.compose.runtime.mutableStateOf(OfflineMode.enabled(application))
+        private set
+    fun setOffline(enabled: Boolean) {
+        try {
+            OfflineMode.setEnabled(getApplication(), enabled)
+            offline.value = enabled
+            refreshJob?.cancel()
+            haSyncJob?.cancel()
+            davSyncJob?.cancel()
+            if (enabled) {
+                message.value = "Offline: cached calendars and local changes remain available"
+                refresh()
+            } else {
+                message.value = "Online: checking calendars and queued changes"
+                refresh()
+                viewModelScope.launch {
+                    refreshJob?.join()
+                    haSyncJob?.join()
+                    davSyncJob?.join()
+                    runCatching { HaBackgroundSync.scheduleIfQueued(getApplication(), false) }
+                    runCatching { DavBackgroundSync.scheduleIfQueued(getApplication(), false) }
+                    reloadPendingHa()
+                    reloadPendingDav()
+                    startHaSync(manual = true)
+                    startDavSync(manual = true)
+                }
+            }
+        } catch (_: Exception) { message.value = "Could not save Offline setting" }
+    }
+    var weekStart = androidx.compose.runtime.mutableStateOf(weekStartStore.load())
+        private set
+    fun setWeekStart(value: com.tinkercobble.ham.data.WeekStart) {
+        weekStartStore.save(value)
+        weekStart.value = value
+    }
+    private val preserveLegacyHaSession = calendarStore.prepareHomeAssistantSelectionMigration(client.connected)
     private val agendaCache = AgendaCache(application)
     private val davStore = DavAccounts(application)
     private val icsStore = IcsSubscriptions(application)
@@ -117,6 +155,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     var haPending = androidx.compose.runtime.mutableStateOf<List<HaPendingSummary>>(emptyList())
     var haBusy = androidx.compose.runtime.mutableStateOf(false)
     var haMessage = androidx.compose.runtime.mutableStateOf("")
+    var haCheckResults = androidx.compose.runtime.mutableStateOf<Map<UUID, String>>(emptyMap())
     private var haSyncJob: Job? = null
     private var lastHaAttemptElapsed = 0L
     var davAccounts = androidx.compose.runtime.mutableStateOf<List<DavAccountSummary>>(
@@ -174,6 +213,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun connectDav(kind: DavKind, address: String, username: String, secret: String, done: () -> Unit) = viewModelScope.launch {
+        if (offline.value) { davMessage.value = "Turn off Offline to connect a calendar"; return@launch }
         davBusy.value = true
         davMessage.value = ""
         try {
@@ -242,6 +282,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun connectIcs(name: String, address: String, username: String,
         password: String, done: () -> Unit) = viewModelScope.launch {
+        if (offline.value) { icsMessage.value = "Turn off Offline to connect an ICS feed"; return@launch }
         icsBusy.value = true
         icsMessage.value = ""
         try {
@@ -309,12 +350,41 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun syncHaPending() { startHaSync(manual = true) }
+    /** A targeted, read-only server check. Never grants permission to resend a create. */
+    fun checkUncertainHaPending(id: UUID) = viewModelScope.launch {
+        if (offline.value) { haMessage.value = "Turn off Offline before checking Home Assistant"; return@launch }
+        if (haBusy.value || haPending.value.none {
+                it.id == id && it.state == HaPendingState.AWAITING_CONFIRMATION }) return@launch
+        haBusy.value = true
+        try {
+            val result = withContext(Dispatchers.IO) {
+                HaMutationDispatcher.flush(pendingHa, client.mutationTransport(),
+                    maxItems = 1, onlyId = id)
+            }
+            reloadPendingHa()
+            val outcome = when {
+                result.networkFailure -> "Could not check Home Assistant. No request was resent."
+                result.conflicts > 0 -> "Calendar access or the saved request changed. Review this conflict."
+                result.confirmed > 0 -> "Home Assistant confirmed this change."
+                result.awaitingExact > 0 -> "One exact event is on the server. HAM cannot prove which request created it; do not retry."
+                result.awaitingSimilar > 0 -> "A similar event is on the server. Review it in Home Assistant; do not retry yet."
+                result.awaitingAbsent > 0 -> "No matching event appeared in the current server read. The earlier send is unconfirmed; review before retrying."
+                else -> "The server result is still uncertain. No request was resent."
+            }
+            haCheckResults.value = haCheckResults.value + (id to outcome)
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) {
+            haCheckResults.value = haCheckResults.value +
+                (id to "Could not check Home Assistant. No request was resent.")
+        } finally { haBusy.value = false }
+    }
     fun syncHaPendingIfStaleOnResume() = viewModelScope.launch {
         try { reloadPendingHa() }
         catch (_: Exception) { haMessage.value = "Pending Home Assistant changes could not be opened" }
         startHaSync(manual = false)
     }
     private fun startHaSync(manual: Boolean) {
+        if (offline.value) { if (manual) haMessage.value = "Turn off Offline to check pending changes"; return }
         if (haSyncJob?.isActive == true || haBusy.value) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (!manual && !DavForegroundRetry.due(lastHaAttemptElapsed, now)) return
@@ -347,13 +417,16 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         try {
             withContext(Dispatchers.IO) { HaMutationDispatcher.exclusive { pendingHa.discard(id) } }
             reloadPendingHa()
+            haCheckResults.value = haCheckResults.value - id
             haMessage.value = "Pending Home Assistant change discarded from this device"
         } catch (_: Exception) { haMessage.value = "Could not discard pending Home Assistant change" }
         finally { haBusy.value = false }
     }
     fun retryUncertainHaPending(id: UUID) = viewModelScope.launch {
+        if (offline.value) { haMessage.value = "Turn off Offline before reviewing this change"; return@launch }
         if (haBusy.value) return@launch
         haBusy.value = true
+        haCheckResults.value = haCheckResults.value - id
         try {
             val result = withContext(Dispatchers.IO) {
                 HaMutationDispatcher.flush(pendingHa, client.mutationTransport(),
@@ -381,6 +454,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         startDavSync(manual = false)
     }
     private fun startDavSync(manual: Boolean) {
+        if (offline.value) { if (manual) davMessage.value = "Turn off Offline to sync pending changes"; return }
         if (davSyncJob?.isActive == true || davBusy.value) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (!manual && !DavForegroundRetry.due(lastDavAttemptElapsed, now)) return
@@ -445,6 +519,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     private fun currentDavConflict(id: UUID, operation: DavOperation = DavOperation.UPDATE): Triple<PendingDavMutation,
         Pair<com.tinkercobble.ham.data.DavAccount, DavConnection.DiscoveredCalendar>,
         DavMutations.CurrentItem> {
+        check(!OfflineMode.enabled(getApplication())) { "Turn off Offline to review server conflicts" }
         val change = pendingDav.list().singleOrNull { it.id == id &&
             it.operation == operation && it.state == DavPendingState.CONFLICT &&
             it.baseIcs != null } ?: error("Calendar conflict is unavailable")
@@ -745,6 +820,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     var activeAgenda = androidx.compose.runtime.mutableStateOf(initialPosition.agenda)
     var navigationDirection = androidx.compose.runtime.mutableIntStateOf(0)
     var failedCalendars = androidx.compose.runtime.mutableStateOf<Map<String, String>>(emptyMap())
+    /** Session-only aggregate causes, with no event text, resource URL or server response. */
+    var davReadDetails = androidx.compose.runtime.mutableStateOf<Map<String, String>>(emptyMap())
     var loadedRange = androidx.compose.runtime.mutableStateOf<DateRange?>(null)
     private var refreshJob: Job? = null
     private var initialCacheRestored = false
@@ -860,6 +937,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         CalendarProviderKind.HOME_ASSISTANT -> source.id !in calendarPreferences.value.hidden
     }
     fun setCalendarVisible(source: CalendarSource, visible: Boolean) {
+        if (!visible && calendarPreferences.value.defaultId == source.id)
+            setCalendarPreferences(calendarPreferences.value.copy(defaultId = null))
         if (source.provider == CalendarProviderKind.ANDROID) {
             val next = if (visible) androidVisibleIds.value + source.id else androidVisibleIds.value - source.id
             androidVisibleIds.value = next
@@ -899,7 +978,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         if (!visible) viewModelScope.launch(Dispatchers.IO) { runCatching { davResources.clear() } }
         val ha = calendars.value.filter { it.provider == CalendarProviderKind.HOME_ASSISTANT }
         setCalendarPreferences(if (visible) calendarPreferences.value.showAll(ha)
-            else calendarPreferences.value.hideAll(ha))
+            else calendarPreferences.value.hideAll(ha).copy(defaultId = null))
         updateWidget()
         refresh()
     }
@@ -951,7 +1030,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         refresh()
     }
     fun selectMonthDay(day: LocalDate) { monthSelectedDate.value = day; savePosition() }
-    fun selectedWritable(id: String?) = CalendarSelection.resolveWritable(id, calendars.value)
+    fun selectedWritable(id: String?) = CalendarSelection.resolveVisibleWritable(
+        id, calendars.value, ::isCalendarVisible)
     fun onAndroidWritePermissionResult() {
         androidWritePermissionGranted.value = androidProvider.canWrite()
         if (androidEnabled.value && androidPermissionGranted.value) refresh()
@@ -1007,6 +1087,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             else DateRange(selectedDate.value, selectedDate.value.plusDays(1))
         refreshJob = viewModelScope.launch { refreshMutex.withLock {
         if (!refreshGeneration.accepts(serial)) return@withLock
+        val offlineNow = offline.value
         loading.value = true
         try {
             val priorHa = calendars.value.filter { it.provider == CalendarProviderKind.HOME_ASSISTANT }
@@ -1026,9 +1107,10 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             val received = mutableListOf<AgendaEvent>()
             val partialDavEvents = mutableListOf<AgendaEvent>()
             val partialDavIds = mutableSetOf<String>()
+            val partialDavDetails = mutableMapOf<String, String>()
             val davResourceReads = mutableListOf<Triple<String, String, List<DavConnection.Resource>>>()
             val davDiscovered = mutableListOf<Pair<String, Set<String>>>()
-            if (client.connected) {
+            if (client.connected && !offlineNow) {
                 try {
                     haSources = client.calendars()
                     haDiscoverySucceeded = true
@@ -1040,7 +1122,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 catch (_: Exception) {
                     priorHa.forEach { failures[it.id] = "Home Assistant unavailable" }
                 }
-            } else haSources = emptyList()
+            } else if (!client.connected) haSources = emptyList()
             if (androidEnabled.value && androidPermissionGranted.value) {
                 try {
                     androidSources = withContext(Dispatchers.IO) { androidProvider.calendars() }
@@ -1088,7 +1170,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } else { androidSources = emptyList(); hamLocalCalendarId.value = null }
             val davAccountsNow = withContext(Dispatchers.IO) { davStore.accounts() }
-            for (account in davAccountsNow) {
+            if (offlineNow) davSources += priorDav
+            for (account in if (offlineNow) emptyList() else davAccountsNow) {
                 val prefix = "dav:${account.id}:"
                 try {
                     val collections = withContext(Dispatchers.IO) { DavConnection.listAccount(account) }
@@ -1113,8 +1196,9 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                             val read = withContext(Dispatchers.IO) {
                                 DavConnection.readEvents(account, collection, source, range) }
                             if (read.partial) {
-                                failures[source.id] = "Some CalDAV items could not be read"
+                                failures[source.id] = read.diagnosticMessage
                                 partialDavIds += source.id
+                                partialDavDetails[source.id] = read.diagnosticBreakdown
                                 received += read.events
                                 partialDavEvents += read.events
                             } else {
@@ -1132,7 +1216,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                     retained.forEach { failures[it.id] = "CalDAV account unavailable" }
                 }
             }
-            try {
+            if (offlineNow) icsSources += priorIcs else try {
                 val subscriptions = withContext(Dispatchers.IO) { icsStore.all() }
                 hasIcsSubscriptions = subscriptions.isNotEmpty()
                 icsDiscoverySucceeded = true
@@ -1159,6 +1243,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 priorIcs.forEach { failures[it.id] = "ICS subscriptions unavailable" }
             }
             if (!refreshGeneration.accepts(serial)) return@launch
+            davReadDetails.value = partialDavDetails
             try {
                 withContext(Dispatchers.IO) {
                     davDiscovered.forEach { (id, selectedIds) -> davResources.retainCalendars(id, selectedIds) }
@@ -1168,6 +1253,20 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { withContext(Dispatchers.IO) { davResources.clear() } }
             val sources = (haSources + androidSources + davSources + icsSources).distinctBy { it.id }
+            if (haDiscoverySucceeded) {
+                val scope = preferenceScope()
+                val discovered = haSources.mapTo(mutableSetOf()) { it.id }
+                val known = withContext(Dispatchers.IO) { calendarStore.loadKnownHomeAssistant(scope) }
+                val safe = CalendarSelection.hideNewHomeAssistantCalendars(
+                    calendarPreferences.value, discovered, known,
+                    priorHa.mapTo(mutableSetOf()) { it.id }, preserveLegacyHaSession)
+                if (safe != calendarPreferences.value) {
+                    calendarPreferences.value = safe
+                    withContext(Dispatchers.IO) { calendarStore.save(scope, safe, durable = true) }
+                }
+                withContext(Dispatchers.IO) { calendarStore.saveKnownHomeAssistant(scope, discovered)
+                    calendarStore.completeHomeAssistantSelectionMigration() }
+            }
             if (!savedGroupStorageError.value) {
                 val complete = buildSet {
                     if (haDiscoverySucceeded) add(CalendarProviderKind.HOME_ASSISTANT)
@@ -1261,13 +1360,13 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 catch (_: Exception) { cacheSaveFailed = true }
                 if (!cacheSaveFailed) updateWidget()
             }
-            if (client.connected) {
+            if (client.connected && !offlineNow) {
                 try {
                     tasks.value = client.tasks()
                     taskError.value = ""
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { taskError.value = "Could not load Home Assistant tasks" }
-            } else {
+            } else if (!client.connected) {
                 tasks.value = emptyList()
                 taskError.value = ""
             }
@@ -1282,13 +1381,14 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             }
             readDiagnosticsRevision.intValue++
             message.value = when {
+                offlineNow -> "Offline: showing saved calendars and local device events"
                 cacheSaveFailed -> "Calendar updated, but offline copy could not be saved"
                 failures.isEmpty() -> "Calendars updated"
                 partialDavIds.isNotEmpty() && failures.size == partialDavIds.size ->
                     "Some CalDAV items could not be read; available events updated"
                 else -> "${failures.size} calendar${if (failures.size == 1) "" else "s"} could not load"
             }
-            if (succeeded.isNotEmpty()) {
+            if (succeeded.isNotEmpty() && !offlineNow) {
                 lastSync.value = Instant.now()
                 lastConnection.value = lastSync.value
                 statusPrefs.edit().putLong("last_sync", lastSync.value!!.toEpochMilli())
@@ -1302,6 +1402,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     fun move(days: Long) { navigationDirection.intValue = days.toInt(); selectedDate.value = selectedDate.value.plusDays(days); dayBrowsing.value = true; savePosition(); refresh() }
     fun today() { navigationDirection.intValue = 0; selectedDate.value = LocalDate.now(); dayBrowsing.value = false; savePosition(); refresh() }
     fun beginAuth(address: String) = viewModelScope.launch {
+        if (offline.value) { message.value = "Turn off Offline to sign in"; return@launch }
         loading.value = true
         try {
             authRequest.value = HomeAssistantAuth.prepare(ConnectionPolicy.normalize(address))
@@ -1311,6 +1412,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun cancelAuth() { authRequest.value = null }
     fun connect(request: AuthRequest, code: String, onConnected: () -> Unit) = viewModelScope.launch {
+        if (offline.value) { message.value = "Turn off Offline to complete sign-in"; return@launch }
         loading.value = true
         try {
             val session = HomeAssistantAuth.exchange(request, code)
@@ -1338,6 +1440,10 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         finally { loading.value = false }
     }
     fun disconnect(requestRevocation: Boolean) = viewModelScope.launch {
+        if (offline.value && requestRevocation) {
+            message.value = "Turn off Offline to revoke Home Assistant access"
+            return@launch
+        }
         loading.value = true
         refreshJob?.cancel()
         refreshGeneration.next()
@@ -1375,6 +1481,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         statusPrefs.edit().remove("last_sync").apply()
     }
     fun refreshConnectionStatus() = viewModelScope.launch {
+        if (offline.value) { message.value = "Turn off Offline to check the connection"; return@launch }
         if (!client.connected) return@launch
         loading.value = true
         try {
@@ -1424,15 +1531,17 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             }) { "An event with this title and time is already pending on that calendar" }
             pendingDav.enqueue(PendingDavMutation(operationId, accountId, source.id,
                 DavOperation.CREATE, null, null, payload))
-            runCatching { DavBackgroundSync.scheduleIfQueued(getApplication(), true) }
-            runCatching { DavMutationDispatcher.flush(account, pendingDav,
+            if (!offline.value) runCatching { DavBackgroundSync.scheduleIfQueued(getApplication(), true) }
+            if (!offline.value) runCatching { DavMutationDispatcher.flush(account, pendingDav,
+                maxItems = 1,
                 accountStillCurrent = { davStore.account(accountId) == account }) }
             pendingDav.list().firstOrNull { it.id == operationId }?.state
         }
         reloadPendingDav()
         message.value = when (state) {
             null -> "Event created on calendar"
-            DavPendingState.QUEUED -> "Event saved on this device; HAM will retry, or sync in Settings"
+            DavPendingState.QUEUED -> if (offline.value) "Event saved on this device; turn off Offline to sync" else
+                "Event saved on this device; HAM will retry, or sync in Settings"
             DavPendingState.CONFLICT -> "HAM could not safely confirm this calendar create; review it in Settings"
         }
         return state == null
@@ -1470,18 +1579,19 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             val binding = client.sessionBinding() ?: error("Connect to Home Assistant first")
             pendingHa.enqueue(PendingHaMutation(id, binding, source.id, proposed,
                 HaOperation.CREATE, null))
-            runCatching { HaBackgroundSync.scheduleIfQueued(getApplication(), true) }
-            try {
+            if (!offline.value) runCatching { HaBackgroundSync.scheduleIfQueued(getApplication(), true) }
+            try { if (!offline.value) {
                 HaMutationDispatcher.flush(pendingHa, client.mutationTransport(),
                     maxItems = 1, onlyId = id)
-            } catch (e: CancellationException) { throw e }
+            } } catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* The encrypted queued create remains for later review. */ }
             pendingHa.list().firstOrNull { it.id == id }?.state
         }
         reloadPendingHa()
         message.value = when (state) {
             null -> "Home Assistant confirmed the new event"
-            HaPendingState.QUEUED -> "Event saved on this device; HAM will sync it when connected"
+            HaPendingState.QUEUED -> if (offline.value) "Event saved on this device; turn off Offline to sync" else
+                "Event saved on this device; HAM will sync it when connected"
             HaPendingState.ACCEPTED -> "Home Assistant accepted creation; calendar confirmation is pending"
             HaPendingState.AWAITING_CONFIRMATION ->
                 "Creation result is uncertain; HAM will not resend without your review"
@@ -1491,7 +1601,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun create(calendarId: String, date: LocalDate, title: String,
         description: String = "", location: String = "", done: () -> Unit,
-        endExclusive: LocalDate = date.plusDays(1)) = viewModelScope.launch {
+        endExclusive: LocalDate = date.plusDays(1),
+        onResult: (Boolean, Boolean, String) -> Unit = { _, _, _ -> }) = viewModelScope.launch {
         loading.value = true
         try {
             require(endExclusive.isAfter(date)) { "All-day end must follow the start date" }
@@ -1512,13 +1623,17 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 message.value = "Event created"
             }
             done()
+            onResult(true, sent, message.value)
             if (sent) refresh()
-        } catch (e: Exception) { message.value = e.message ?: "Event was not created" }
+        } catch (e: Exception) {
+            message.value = e.message ?: "Event was not created"
+            onResult(false, false, message.value)
+        }
         finally { loading.value = false }
     }
     fun createTimed(calendarId: String, date: LocalDate, startText: String, endText: String,
         title: String, description: String = "", location: String = "",
-        done: () -> Unit) = viewModelScope.launch {
+        done: () -> Unit, onResult: (Boolean, Boolean, String) -> Unit = { _, _, _ -> }) = viewModelScope.launch {
         loading.value = true
         try {
             val source = selectedWritable(calendarId)
@@ -1540,8 +1655,12 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 message.value = "Event created"
             }
             done()
+            onResult(true, sent, message.value)
             if (sent) refresh()
-        } catch (e: Exception) { message.value = e.message ?: "Event was not created" }
+        } catch (e: Exception) {
+            message.value = e.message ?: "Event was not created"
+            onResult(false, false, message.value)
+        }
         finally { loading.value = false }
     }
     fun moveAndroidEvent(event: AgendaEvent, destinationId: String, draft: IcsImportDraft,
@@ -1566,7 +1685,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun createRecurringAllDay(calendarId: String, date: LocalDate, title: String,
         repeat: RepeatSpec, description: String = "", location: String = "",
-        done: () -> Unit) = viewModelScope.launch {
+        done: () -> Unit, onResult: (Boolean, Boolean, String) -> Unit = { _, _, _ -> }) = viewModelScope.launch {
         loading.value = true
         try {
             val source = selectedWritable(calendarId)
@@ -1587,14 +1706,19 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 message.value = "Series created"
             }
             done()
+            onResult(true, sent, message.value)
             if (sent) refresh()
-        } catch (e: Exception) { message.value = e.message ?: "Series was not created" }
+        } catch (e: Exception) {
+            message.value = e.message ?: "Series was not created"
+            onResult(false, false, message.value)
+        }
         finally { loading.value = false }
     }
     fun createRecurringTimed(calendarId: String, date: LocalDate, startText: String,
         endText: String, title: String, repeat: RepeatSpec,
         description: String = "", location: String = "", done: () -> Unit,
-        expectedZoneId: String? = null) = viewModelScope.launch {
+        expectedZoneId: String? = null,
+        onResult: (Boolean, Boolean, String) -> Unit = { _, _, _ -> }) = viewModelScope.launch {
         loading.value = true
         try {
             val source = selectedWritable(calendarId)
@@ -1621,8 +1745,12 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             setCalendarPreferences(calendarPreferences.value.used(calendarId))
             if (source.provider != CalendarProviderKind.CALDAV) message.value = "Timed series created"
             done()
+            onResult(true, sent, message.value)
             if (sent) refresh()
-        } catch (e: Exception) { message.value = e.message ?: "Timed series was not created" }
+        } catch (e: Exception) {
+            message.value = e.message ?: "Timed series was not created"
+            onResult(false, false, message.value)
+        }
         finally { loading.value = false }
     }
     private suspend fun queueHaChange(source: CalendarSource, event: AgendaEvent,
@@ -1640,17 +1768,14 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 val command = HomeAssistantCalendarMutation.updateCommand(source, event,
                     listOf(event), checkNotNull(title), startText, endText,
                     description = description, location = location, newDate = newDate)
-                val values = command.getJSONObject("event")
-                HaTarget(values.getString("summary"), values.getString("start"),
-                    values.getString("end"), values.getString("description"),
-                    values.getString("location"))
+                HomeAssistantCalendarMutation.targetFromUpdateCommand(command)
             } else {
                 HomeAssistantCalendarMutation.deleteCommand(source, event, listOf(event))
                 null
             }
             pendingHa.enqueue(PendingHaMutation(id, binding, source.id, event, operation, target))
-            runCatching { HaBackgroundSync.scheduleIfQueued(getApplication(), true) }
-            try { HaMutationDispatcher.flush(pendingHa, client.mutationTransport(),
+            if (!offline.value) runCatching { HaBackgroundSync.scheduleIfQueued(getApplication(), true) }
+            try { if (!offline.value) HaMutationDispatcher.flush(pendingHa, client.mutationTransport(),
                 maxItems = 1, onlyId = id) }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* The encrypted queued change remains for a later check. */ }
@@ -1659,7 +1784,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         reloadPendingHa()
         message.value = when (state) {
             null -> "Home Assistant change confirmed"
-            HaPendingState.QUEUED -> "Change saved on this device; HAM will retry when connected"
+            HaPendingState.QUEUED -> if (offline.value) "Change saved on this device; turn off Offline to sync" else
+                "Change saved on this device; HAM will retry when connected"
             HaPendingState.ACCEPTED -> "Home Assistant accepted the change; calendar confirmation is pending"
             HaPendingState.AWAITING_CONFIRMATION ->
                 "Home Assistant response is uncertain; HAM will not resend without your review"
@@ -1765,15 +1891,16 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             pendingDav.enqueue(PendingDavMutation(operationId, accountId, source.id,
                 DavOperation.UPDATE, resource.url, resource.etag, payload,
                 baseIcs = resource.ics))
-            runCatching { DavBackgroundSync.scheduleIfQueued(getApplication(), true) }
-            runCatching { DavMutationDispatcher.flush(account, pendingDav,
+            if (!offline.value) runCatching { DavBackgroundSync.scheduleIfQueued(getApplication(), true) }
+            if (!offline.value) runCatching { DavMutationDispatcher.flush(account, pendingDav,
                 accountStillCurrent = { davStore.account(accountId) == account }) }
             pendingDav.list().firstOrNull { it.id == operationId }?.state
         }
         reloadPendingDav()
         message.value = when (state) {
             null -> "Event updated on calendar"
-            DavPendingState.QUEUED -> "Change saved on this device; HAM will retry, or sync in Settings"
+            DavPendingState.QUEUED -> if (offline.value) "Change saved on this device; turn off Offline to sync" else
+                "Change saved on this device; HAM will retry, or sync in Settings"
             DavPendingState.CONFLICT -> "Calendar server reported a conflict; review pending changes in Settings"
         }
         return state == null
@@ -1956,15 +2083,16 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 pendingDav.enqueue(PendingDavMutation(operationId, accountId, source.id,
                     DavOperation.DELETE, resource.url, resource.etag, null, uid = event.uid,
                     baseIcs = resource.ics))
-                runCatching { DavBackgroundSync.scheduleIfQueued(getApplication(), true) }
-                runCatching { DavMutationDispatcher.flush(account, pendingDav,
+                if (!offline.value) runCatching { DavBackgroundSync.scheduleIfQueued(getApplication(), true) }
+                if (!offline.value) runCatching { DavMutationDispatcher.flush(account, pendingDav,
                     accountStillCurrent = { davStore.account(accountId) == account }) }
                 pendingDav.list().firstOrNull { it.id == operationId }?.state
             }
             reloadPendingDav()
             message.value = when (state) {
                 null -> "Event removed from calendar"
-                DavPendingState.QUEUED -> "Removal saved on this device; HAM will retry, or sync in Settings"
+                DavPendingState.QUEUED -> if (offline.value) "Removal saved on this device; turn off Offline to sync" else
+                    "Removal saved on this device; HAM will retry, or sync in Settings"
                 DavPendingState.CONFLICT -> "Calendar server reported a conflict; review pending changes in Settings"
             }
             done()

@@ -28,8 +28,31 @@ object DavConnection {
     data class Discovery(val home: String, val calendars: List<DiscoveredCalendar>)
     data class Resource(val url: String, val etag: String, val ics: ByteArray, val uid: String?)
     data class EventRead(val events: List<AgendaEvent>, val unsupportedRecurring: Int,
-        val resources: List<Resource>, val unreadableItems: Int = 0) {
+        val resources: List<Resource>, val unreadableItems: Int = 0,
+        val missingCalendarData: Int = 0, val unparseableCalendarData: Int = 0,
+        val unverifiedResourceMetadata: Int = 0,
+        val recurrenceIssues: Map<RecurrenceIssue, Int> = emptyMap()) {
         val partial get() = unsupportedRecurring > 0 || unreadableItems > 0
+        val diagnosticMessage: String get() = when {
+            unsupportedRecurring > 0 && unreadableItems == 0 ->
+                "Some recurring CalDAV events are not supported"
+            missingCalendarData > 0 && missingCalendarData == unreadableItems ->
+                "Some CalDAV item data was missing"
+            unparseableCalendarData > 0 && unparseableCalendarData == unreadableItems ->
+                "Some CalDAV item data could not be parsed"
+            unverifiedResourceMetadata > 0 && unverifiedResourceMetadata == unreadableItems ->
+                "Some CalDAV item metadata could not be verified"
+            else -> "Some CalDAV items could not be read"
+        }
+        val diagnosticBreakdown: String get() = listOfNotNull(
+            unsupportedRecurring.takeIf { it > 0 }?.let { "Unsupported recurring items: $it" },
+            recurrenceIssues.entries.sortedBy { it.key.name }.takeIf { it.isNotEmpty() }?.let { issues ->
+                issues.joinToString("; ") { "${it.key.label}: ${it.value}" }
+            },
+            missingCalendarData.takeIf { it > 0 }?.let { "Missing calendar data: $it" },
+            unparseableCalendarData.takeIf { it > 0 }?.let { "Unreadable calendar data: $it" },
+            unverifiedResourceMetadata.takeIf { it > 0 }?.let { "Unverified item metadata: $it" },
+        ).joinToString(" · ")
     }
     fun source(account: DavAccount, collection: DiscoveredCalendar): CalendarSource {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -239,21 +262,30 @@ object DavConnection {
         }
         val responses = document(bytes).documentElement.direct("DAV:", "response")
         check(responses.size <= 2000) { "Too many calendar items" }
-        val received = mutableListOf<AgendaEvent>()
+        val received = mutableListOf<Pair<AgendaEvent, Boolean>>()
         val resources = mutableListOf<Resource>()
         var unsupported = 0
         var unreadable = 0
+        var missingData = 0
+        var unparseableData = 0
+        var unverifiedMetadata = 0
+        val recurrenceIssues = mutableMapOf<RecurrenceIssue, Int>()
         for (response in responses) {
             val props = response.goodProperties()
             val data = props.asSequence()
                 .flatMap { it.direct("urn:ietf:params:xml:ns:caldav", "calendar-data").asSequence() }
                 .map { it.textContent }.firstOrNull()
-            if (data == null) { unreadable++; continue }
+            if (data == null) { unreadable++; missingData++; continue }
             val ics = data.toByteArray(Charsets.UTF_8)
             val item = try { IcsEventParser.parse(ics, source, range) }
-                catch (_: Exception) { unreadable++; continue }
-            received += item.events.filter { event -> event.occursIn(range) }
+                catch (_: Exception) { unreadable++; unparseableData++; continue }
+            received += item.events.filter { event -> event.occursIn(range) }.map { event ->
+                event to ((event.uid to event.recurrenceId) in item.detachedOccurrenceKeys)
+            }
             unsupported += item.unsupportedRecurring
+            item.recurrenceIssues.forEach { (reason, count) ->
+                recurrenceIssues[reason] = (recurrenceIssues[reason] ?: 0) + count
+            }
             val etag = props.asSequence().flatMap { it.direct("DAV:", "getetag").asSequence() }
                 .map { it.textContent.trim() }.firstOrNull { it.isNotBlank() }
             val href = response.direct("DAV:", "href").singleOrNull()?.textContent?.trim()
@@ -264,8 +296,16 @@ object DavConnection {
                 itemUrl.query == null && itemUrl.fragment == null) {
                 resources += Resource(itemUrl.toString(), etag, ics,
                     item.events.mapNotNull { it.uid }.distinct().singleOrNull())
-            } else unreadable++
+            } else { unreadable++; unverifiedMetadata++ }
         }
-        return EventRead(distinctEvents(received), unsupported, resources, unreadable)
+        // A detached occurrence in a separate resource supersedes the master's generated
+        // instance even when its moved time or title differs.
+        val detachedKeys = received.filter { it.second }.mapNotNull { (event, _) ->
+            event.uid?.let { uid -> event.recurrenceId?.let { uid to it } }
+        }.toSet()
+        val visible = received.filter { (event, detached) -> detached ||
+            (event.uid to event.recurrenceId) !in detachedKeys }.map { it.first }
+        return EventRead(distinctEvents(visible), unsupported, resources, unreadable,
+            missingData, unparseableData, unverifiedMetadata, recurrenceIssues)
     }
 }

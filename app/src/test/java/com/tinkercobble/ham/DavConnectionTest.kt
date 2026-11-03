@@ -173,6 +173,86 @@ END:VCALENDAR""".trimIndent().replace("\n", "\r\n")
         assertEquals("Valid synthetic event", read.events.single().summary)
         assertEquals(1, read.resources.size)
         assertEquals(1, read.unreadableItems)
+        assertEquals(1, read.unparseableCalendarData)
+        assertEquals(0, read.missingCalendarData)
+        assertEquals(0, read.unverifiedResourceMetadata)
+        assertEquals("Some CalDAV item data could not be parsed", read.diagnosticMessage)
+        assertEquals("Unreadable calendar data: 1", read.diagnosticBreakdown)
+        assertTrue(read.partial)
+    }
+
+    @Test fun separateDetachedOccurrenceSupersedesGeneratedSeriesInstance() {
+        fun calendar(event: String) = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//HAM Test//EN
+$event
+END:VCALENDAR
+""".trimIndent().replace("\n", "\r\n")
+        val master = calendar("""BEGIN:VEVENT
+UID:series@example.test
+DTSTAMP:20261027T120000Z
+DTSTART:20261101T140000Z
+DTEND:20261101T150000Z
+RRULE:FREQ=DAILY;COUNT=2
+SUMMARY:Fictional original
+END:VEVENT""")
+        val moved = calendar("""BEGIN:VEVENT
+UID:series@example.test
+DTSTAMP:20261027T120000Z
+RECURRENCE-ID:20261102T140000Z
+DTSTART:20261102T180000Z
+DTEND:20261102T190000Z
+SUMMARY:Fictional moved
+END:VEVENT""")
+        fun response(name: String, data: String) = """<d:response>
+<d:href>/user/calendars/family/$name.ics</d:href><d:propstat><d:prop>
+<d:getetag>&quot;$name&quot;</d:getetag><c:calendar-data><![CDATA[$data]]></c:calendar-data>
+</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"""
+        val xml = """<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+${response("master", master)}${response("moved", moved)}</d:multistatus>"""
+        val http = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(207).message("Multi-Status").body(xml.toResponseBody()).build()
+        }).build()
+        val account = DavAccount("id", DavKind.CALDAV, "https://dav.example.test/user/calendars/",
+            "sample@example.test", "synthetic-password")
+        val collection = DavConnection.DiscoveredCalendar("https://dav.example.test/user/calendars/family/", "Family")
+        val read = DavConnection.readEvents(account, collection, DavConnection.source(account, collection),
+            DateRange(LocalDate.parse("2026-11-01"), LocalDate.parse("2026-11-04")), http)
+        assertTrue(!read.partial)
+        assertEquals(2, read.events.size)
+        assertEquals(listOf("Fictional original", "Fictional moved"), read.events.map { it.summary })
+        assertEquals(2, read.resources.size)
+    }
+
+    @Test fun missingDataAndUnverifiedMetadataRemainPartialWithoutDiscardingReadableEvent() {
+        val valid = DavEventPayload.create(java.util.UUID.fromString(
+            "6b88b039-53d1-4f59-9855-1425271c8a19"), LocalDate.parse("2026-11-01"),
+            "Synthetic appointment", true, now = java.time.Instant.parse("2026-10-27T12:00:00Z"))
+            .toString(Charsets.UTF_8)
+        val xml = """<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+            <d:response><d:href>/user/calendars/family/missing.ics</d:href><d:propstat><d:prop>
+            <d:getetag>&quot;one&quot;</d:getetag></d:prop>
+            <d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+            <d:response><d:href>/user/calendars/family/no-etag.ics</d:href><d:propstat><d:prop>
+            <c:calendar-data><![CDATA[$valid]]></c:calendar-data></d:prop>
+            <d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+            </d:multistatus>""".trimIndent()
+        val http = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(207).message("Multi-Status").body(xml.toResponseBody()).build()
+        }).build()
+        val account = DavAccount("id", DavKind.CALDAV, "https://dav.example.test/user/calendars/",
+            "sample@example.test", "synthetic-password")
+        val collection = DavConnection.DiscoveredCalendar("https://dav.example.test/user/calendars/family/", "Family")
+        val read = DavConnection.readEvents(account, collection, DavConnection.source(account, collection),
+            DateRange(LocalDate.parse("2026-11-01"), LocalDate.parse("2026-11-02")), http)
+        assertEquals(1, read.events.size)
+        assertEquals(0, read.resources.size)
+        assertEquals(2, read.unreadableItems)
+        assertEquals(1, read.missingCalendarData)
+        assertEquals(1, read.unverifiedResourceMetadata)
+        assertEquals("Missing calendar data: 1 · Unverified item metadata: 1", read.diagnosticBreakdown)
         assertTrue(read.partial)
     }
 

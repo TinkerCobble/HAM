@@ -15,6 +15,15 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class HomeAssistantCalendarMutationInstrumentedTest {
+    @Test fun createUsesHomeAssistantWebSocketEventFieldNames() {
+        val proposed = event.copy(uid = null)
+        val payload = HomeAssistantCalendarMutation.createCommand(source, proposed, emptyList())
+            .getJSONObject("event")
+        assertEquals(proposed.start, payload.getString("dtstart"))
+        assertEquals(proposed.end, payload.getString("dtend"))
+        assertFalse(payload.has("start"))
+        assertFalse(payload.has("end"))
+    }
     @Test fun detailEditUsesExactUidAndRequiresMatchingProjection() {
         val current = event.copy(description = "Old synthetic notes", location = "Old room")
         val command = HomeAssistantCalendarMutation.updateCommand(source, current,
@@ -24,6 +33,10 @@ class HomeAssistantCalendarMutationInstrumentedTest {
         assertEquals(current.uid, command.getString("uid"))
         assertEquals("New synthetic notes", payload.getString("description"))
         assertEquals("New room", payload.getString("location"))
+        val queuedTarget = HomeAssistantCalendarMutation.targetFromUpdateCommand(command)
+        assertEquals(current.start, queuedTarget.start)
+        assertEquals(current.end, queuedTarget.end)
+        assertEquals("New room", queuedTarget.location)
         assertTrue(HomeAssistantCalendarMutation.updateVisible(source, current, command,
             listOf(current.copy(description = "New synthetic notes", location = "New room"))))
         assertFalse(HomeAssistantCalendarMutation.updateVisible(source, current, command,
@@ -121,8 +134,8 @@ class HomeAssistantCalendarMutationInstrumentedTest {
         assertEquals(timed.uid, command.getString("uid"))
         val edited = command.getJSONObject("event")
         assertEquals("Revised", edited.getString("summary"))
-        assertEquals("2026-10-27T11:00-04:00", edited.getString("start"))
-        assertEquals("2026-10-27T12:30-04:00", edited.getString("end"))
+        assertEquals("2026-10-27T11:00-04:00", edited.getString("dtstart"))
+        assertEquals("2026-10-27T12:30-04:00", edited.getString("dtend"))
         assertEquals(timed.description, edited.getString("description"))
         assertEquals(timed.location, edited.getString("location"))
         assertTrue(runCatching { HomeAssistantCalendarMutation.updateCommand(source,
