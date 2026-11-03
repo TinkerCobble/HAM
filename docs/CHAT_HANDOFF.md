@@ -1,5 +1,12 @@
 # Public HAM — Chat and Codex handoff
 
+## Code146 public publication — 2026-11-03
+
+- **Source:** audited code146 source snapshot `5e514bc` was merged through PR 1 after all three GitHub checks passed. Separate public history contains no private development commits.
+- **Checks:** 169 JVM tests, release build/lint, source privacy, current/history Gitleaks, staged artifact scan, and identical private/public unsigned APK bytes passed. The signed APK was installed Note8 first, then Pixel and tablet with retained first-install dates and matching device hashes.
+- **Live:** exact 0.3.30/code146 APK and matching GPL source are anonymously available on the HAM page. Staged, R2 read-back and public URL SHA-256 values matched. The canonical feed now advertises code146 with no-cache and matching hash. Android may still request user approval to install an update.
+- **Limits:** wider provider and scheduling acceptance remains open. The old DEV app remains intact. No account or calendar records were changed for this publication.
+
 ## Code146 audited source candidate — 2026-11-03
 
 - **Source:** standalone public `codex/ham-code146-public` branch, based on the existing public repository. It copies only generic tracked application/build/license material from the privately verified code146 source; no private Git history is merged.

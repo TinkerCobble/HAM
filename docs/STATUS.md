@@ -1,5 +1,9 @@
 # Public HAM status — 2026-10-29
 
+## 2026-11-03 code146 public release
+
+HAM 0.3.30/code146 is the current public download and canonical update feed. The signed APK was installed in place Note8 first, then Pixel and tablet; hashes, signer, package and first-install dates matched. Public source snapshot `5e514bc` passed GitHub privacy CI and exact unsigned build parity. Public APK/source downloads and feed were read back successfully. Broader provider acceptance and full project completion remain open; Android can require install approval.
+
 **2026-11-03 code146 source candidate:** This separate public tree carries canonical 0.3.30/code146 application source without private Git history or signing material. It adds calendar setup and week-start controls, offline queuing and diagnostics, and a read-only check for uncertain Home Assistant changes. A clean source build matched the clean private unsigned APK byte for byte; 169 JVM tests, release build/lint and current-file privacy scans passed. The exact signed APK was installed in place on the Note8 first, then Pixel and tablet with package/signer/first-install continuity and APK hash read-back. Public APK/source/website/feed publication remains pending at this checkpoint. Broader provider and feature acceptance remain open.
 
 Code131 physical Pixel update (later 2026-10-29): HAM background worker initiated the live code131 update on unmetered Wi-Fi. Pixel owner completed Play Protect Scan app and Install app prompts. Exact pulled code131 APK hash/signer and original first-install time matched Note8/staging/live, HAM process ran, and no bounded fresh HAM fatal marker was found. This verifies automatic detection/download and HAM-initiated approval-based installation, not no-tap Pixel installation. The Android 16 release-signed emulator separately passed a no-prompt code129-to-code130 update. Full feature matrix remains open.
