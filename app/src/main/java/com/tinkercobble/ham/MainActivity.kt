@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -57,6 +59,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
+import com.tinkercobble.ham.data.OfflineMode
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
@@ -77,12 +80,14 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
@@ -110,6 +115,8 @@ import com.tinkercobble.ham.data.CalendarProviderKind
 import com.tinkercobble.ham.data.CalendarSelection
 import com.tinkercobble.ham.data.CalendarView
 import com.tinkercobble.ham.data.CalendarDisplay
+import com.tinkercobble.ham.data.MonthLayout
+import com.tinkercobble.ham.data.WeekStart
 import com.tinkercobble.ham.data.EventGroups
 import com.tinkercobble.ham.data.DailyOverview
 import com.tinkercobble.ham.data.DavKind
@@ -129,6 +136,9 @@ import com.tinkercobble.ham.data.EventTemplate
 import com.tinkercobble.ham.data.EventTemplateStore
 import com.tinkercobble.ham.data.QuickAddDraft
 import com.tinkercobble.ham.data.QuickAddDraftStore
+import com.tinkercobble.ham.data.AddressVerification
+import com.tinkercobble.ham.data.VenueCandidate
+import com.tinkercobble.ham.data.ScreenshotExtraction
 import com.tinkercobble.ham.data.LocalTask
 import com.tinkercobble.ham.data.LocalTaskStore
 import com.tinkercobble.ham.data.AndroidCalendarProvider
@@ -157,6 +167,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -233,6 +244,7 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
     }
     var returnPage by remember { mutableStateOf("Today") }
     var manageId by remember { mutableStateOf<String?>(null) }
+    var setupRequested by remember { mutableStateOf(false) }
     val calendarScroll = rememberLazyListState()
     fun navigate(destination: String) {
         when (destination) {
@@ -242,6 +254,7 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
         page = destination
     }
     fun openCalendars(id: String? = null) { returnPage = page; manageId = id; page = "Calendars" }
+    fun openSetup() { setupRequested = true; page = "Settings" }
     var availableUpdate by remember { mutableStateOf<AvailableUpdate?>(null) }
     var showUpdatePrompt by remember { mutableStateOf(false) }
     var downloadingUpdate by remember { mutableStateOf(false) }
@@ -344,7 +357,8 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
     LaunchedEffect(Unit) {
         activity.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             if (updateSession.beginNormalLaunch(android.os.SystemClock.elapsedRealtime(),
-                    pendingInstall != null || downloadingUpdate) && UpdateService.shouldAutoCheck(context)) {
+                    pendingInstall != null || downloadingUpdate) && UpdateService.shouldAutoCheck(context) &&
+                    !OfflineMode.enabled(context)) {
                 delay(1_500)
                 val result = UpdateService.check(context, manual = false)
                 result.update?.let {
@@ -396,8 +410,9 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
             val wide = maxWidth >= 600.dp
             Row(Modifier.fillMaxSize()) {
                 if (wide) {
-                    Surface(tonalElevation = 2.dp) {
-                        Column(Modifier.widthIn(min = 156.dp).padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Surface(modifier = Modifier.width(180.dp), tonalElevation = 2.dp) {
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             pages.forEach { destination ->
                                 NavigationChoice(destination, page == destination, { navigate(destination) }, Modifier.fillMaxWidth())
                             }
@@ -412,16 +427,18 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
                             if (model.message.value.isNotBlank() && model.message.value != "Updated from Home Assistant")
                                 Text(model.message.value, style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (!model.hasAgendaSource && page !in listOf("Settings", "Screenshot", "Quick Add", "More", "Tasks")) {
-                                Text("Connect a calendar source to see your agenda.")
-                                TextButton(onClick = { page = "Settings" }) { Text("Open Settings") }
+                            if (model.calendars.value.isEmpty() && page in listOf("Today", "Calendar", "Calendars")) {
+                                Text("No calendars found yet", style = MaterialTheme.typography.headlineSmall)
+                                Text("Connect an existing calendar to see events, or create a local calendar on this device.")
+                                Button(onClick = ::openSetup) { Text("+ Add Calendar") }
                             } else when (page) {
-                                "Today" -> TodayPage(model, ::openCalendars) { eventCopy = it; page = "Quick Add" }
-                                "Calendar" -> CalendarPage(model, calendarScroll, ::openCalendars) { eventCopy = it; page = "Quick Add" }
+                                "Today" -> TodayPage(model, ::openCalendars, ::openSetup) { eventCopy = it; page = "Quick Add" }
+                                "Calendar" -> CalendarPage(model, calendarScroll, ::openCalendars, ::openSetup) { eventCopy = it; page = "Quick Add" }
                                 "Quick Add" -> QuickAddPage(model, quickAddSlot, { quickAddSlot = null },
                                     eventCopy, { eventCopy = null }, onScreenshot = {
                                     screenshotPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                }, onResume = { screenshotUri = null; page = "Screenshot" })
+                                    }, onResume = { screenshotUri = null; page = "Screenshot" },
+                                    onAddCalendar = ::openSetup)
                                 "Find Time" -> FindTimePage(model) { start, end ->
                                     quickAddSlot = start to end
                                     page = "Quick Add"
@@ -431,10 +448,11 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
                                     onSaved = { screenshotUri = null; model.activeAgenda.value = "Calendar"; page = "Calendar" })
                                 "Tasks" -> TasksPage(model)
                                 "Search" -> SearchPage(model, ::openCalendars) { eventCopy = it; page = "Quick Add" }
-                                "Calendars" -> ManageCalendarsPage(model, { page = returnPage }, manageId)
+                                "Calendars" -> ManageCalendarsPage(model, { page = returnPage }, ::openSetup, manageId)
                                 "About" -> AboutPage()
                                 "More" -> MorePage { page = it }
-                                else -> SettingsPage(model, onConnected = { navigate("Today") }, onUpdateAvailable = {
+                                else -> SettingsPage(model, onConnected = { navigate("Today") },
+                                    openSetup = setupRequested, onSetupConsumed = { setupRequested = false }, onUpdateAvailable = {
                                     availableUpdate = it
                                     showUpdatePrompt = true
                                 })
@@ -654,7 +672,7 @@ private fun DayPicker(model: HamViewModel) {
 }
 
 @Composable
-private fun TodayPage(model: HamViewModel, openCalendars: (String?) -> Unit,
+private fun TodayPage(model: HamViewModel, openCalendars: (String?) -> Unit, openSetup: () -> Unit,
     onCopy: (EventCopyRequest) -> Unit) {
     val context = LocalContext.current
     var confirmDayExport by remember { mutableStateOf(false) }
@@ -678,6 +696,7 @@ private fun TodayPage(model: HamViewModel, openCalendars: (String?) -> Unit,
             style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
         TextButton(onClick = { openCalendars(null) }) { Text("Calendars") }
     }
+    if (model.calendars.value.isEmpty()) Button(onClick = openSetup) { Text("+ Add Calendar") }
     DayPicker(model)
     model.activeSavedGroup?.let { Text("Showing group: ${it.name}", style = MaterialTheme.typography.bodySmall) }
     RefreshStatus(model)
@@ -719,7 +738,7 @@ private fun TodayPage(model: HamViewModel, openCalendars: (String?) -> Unit,
 
 @Composable
 private fun CalendarPage(model: HamViewModel, scroll: androidx.compose.foundation.lazy.LazyListState,
-    openCalendars: (String?) -> Unit, onCopy: (EventCopyRequest) -> Unit) {
+    openCalendars: (String?) -> Unit, openSetup: () -> Unit, onCopy: (EventCopyRequest) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("Calendar", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f), maxLines = 1)
         ModeButton("▦", "Month view", model.calendarView.value == CalendarView.MONTH) { model.setView(CalendarView.MONTH) }
@@ -740,8 +759,9 @@ private fun CalendarPage(model: HamViewModel, scroll: androidx.compose.foundatio
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         TextButton(onClick = { openCalendars(null) }) { Text("Calendars") }
         Spacer(Modifier.weight(1f))
-        TextButton(onClick = { model.enterCalendar() }) { Text("Today") }
+        TextButton(onClick = openSetup) { Text("+ Add Calendar") }
     }
+    TextButton(onClick = { model.enterCalendar() }) { Text("Today") }
     model.activeSavedGroup?.let { Text("Showing group: ${it.name}", style = MaterialTheme.typography.bodySmall) }
     RefreshStatus(model)
     AgendaContent(model, range.days, openCalendars, Modifier.fillMaxSize(), model.calendarView.value == CalendarView.MONTH,
@@ -852,14 +872,15 @@ private fun AgendaContent(model: HamViewModel, days: List<LocalDate>, openCalend
 @Composable
 private fun MonthGrid(model: HamViewModel) {
     val range = model.calendarRange()
-    val first = range.start
-    val offset = first.dayOfWeek.value - 1
-    val cellCount = ((offset + range.days.size + 6) / 7) * 7
-    val cells = (0 until cellCount).map { first.plusDays((it - offset).toLong()) }
-    val days = listOf("M", "T", "W", "T", "F", "S", "S")
+    val locale = LocalConfiguration.current.locales[0]
+    val firstDay = model.weekStart.value.firstDay(locale)
+    val cells = MonthLayout.cells(range.start, range.days.size, firstDay)
+    val days = MonthLayout.weekdays(firstDay)
     Column {
-        Row(Modifier.fillMaxWidth()) { days.forEach { Text(it, Modifier.weight(1f), textAlign = TextAlign.Center,
-            style = MaterialTheme.typography.labelSmall) } }
+        Row(Modifier.fillMaxWidth()) { days.forEach { day ->
+            Text(day.getDisplayName(TextStyle.SHORT, locale), Modifier.weight(1f), textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.labelSmall)
+        } }
         cells.chunked(7).forEach { week ->
             Row(Modifier.fillMaxWidth()) { week.forEach { day ->
                 val inMonth = range.contains(day)
@@ -1096,8 +1117,8 @@ private fun EventDetails(event: AgendaEvent, source: CalendarSource?, model: Ham
     }
     var attachmentImage by remember(event.identity) { mutableStateOf<android.graphics.Bitmap?>(null) }
     var attachmentError by remember(event.identity) { mutableStateOf("") }
-    LaunchedEffect(attachmentId) {
-        if (attachmentId != null) {
+    LaunchedEffect(attachmentId, model.offline.value) {
+        if (attachmentId != null && !model.offline.value) {
             try {
                 val bytes = com.tinkercobble.ham.data.HomeAssistantClient(context).screenshot(attachmentId)
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -1108,7 +1129,7 @@ private fun EventDetails(event: AgendaEvent, source: CalendarSource?, model: Ham
                     BitmapFactory.Options().apply { inSampleSize = sample })
                     ?: error("Could not display screenshot")
             } catch (e: Exception) { attachmentError = e.message ?: "Screenshot unavailable" }
-        }
+        } else if (attachmentId != null) attachmentError = "Screenshot unavailable while Offline is on"
     }
     AlertDialog(onDismissRequest = close, title = { Text("Event details") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -1547,7 +1568,7 @@ private fun AndroidReminderDialog(source: CalendarSource, event: AgendaEvent, cl
 @Composable
 private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String>?,
     onSuggestionApplied: () -> Unit, copyRequest: EventCopyRequest?, onCopyConsumed: () -> Unit,
-    onScreenshot: () -> Unit, onResume: () -> Unit) {
+    onScreenshot: () -> Unit, onResume: () -> Unit, onAddCalendar: () -> Unit) {
     val context = LocalContext.current
     val templateStore = remember(context) { EventTemplateStore(context) }
     val quickDraftStore = remember(context) { QuickAddDraftStore(context) }
@@ -1630,7 +1651,25 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         (moveSource == null || it?.provider == CalendarProviderKind.ANDROID) }
     var title by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
-    var location by rememberSaveable { mutableStateOf("") }
+    var venue by rememberSaveable { mutableStateOf("") }
+    var address by rememberSaveable { mutableStateOf("") }
+    val location = ScreenshotExtraction.eventLocation(venue, address)
+    val lookupPrefs = remember(context) { context.getSharedPreferences("ham-address-lookup", 0) }
+    var lookupOptIn by remember { mutableStateOf(lookupPrefs.getBoolean("enabled", false)) }
+    var lookupRequest by remember { mutableStateOf("") }
+    var addressVerified by remember { mutableStateOf(false) }
+    var addressCandidates by remember { mutableStateOf<List<VenueCandidate>>(emptyList()) }
+    LaunchedEffect(lookupRequest, lookupOptIn, model.offline.value) {
+        val query = lookupRequest
+        if (query.isBlank() || !lookupOptIn || model.offline.value ||
+            !AddressVerification.complete(query)) return@LaunchedEffect
+        try {
+            val matches = AddressVerification.lookup(context, query)
+            if (lookupOptIn && address == query) addressCandidates = matches
+        } catch (_: Exception) {
+            if (address == query) addressCandidates = emptyList()
+        }
+    }
     var allDay by rememberSaveable { mutableStateOf(true) }
     var lastAllDayDateText by rememberSaveable { mutableStateOf("") }
     var repeatFrequency by rememberSaveable { mutableStateOf<RepeatFrequency?>(null) }
@@ -1644,7 +1683,8 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         if (draftReady) return@LaunchedEffect
         val draft = withContext(Dispatchers.IO) { quickDraftStore.load() }
         if (draft != null) {
-            title = draft.title; description = draft.description; location = draft.location
+            title = draft.title; description = draft.description
+            venue = draft.venue; address = draft.address
             allDay = draft.allDay; startTime = draft.start; endTime = draft.end
             lastAllDayDateText = draft.lastDay; selectedId = draft.calendarId
             repeatFrequency = draft.repeatFrequency?.let { name ->
@@ -1657,7 +1697,7 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         }
         draftReady = true
     }
-    LaunchedEffect(draftReady, title, description, location, allDay, startTime, endTime,
+    LaunchedEffect(draftReady, title, description, venue, address, allDay, startTime, endTime,
         lastAllDayDateText, selectedId, repeatFrequency, repeatCount, model.selectedDate.value) {
         if (!draftReady) return@LaunchedEffect
         delay(350)
@@ -1666,7 +1706,7 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
                 repeatFrequency == null && lastAllDayDateText.isBlank()) quickDraftStore.clear()
             else quickDraftStore.save(QuickAddDraft(title, description, location,
                 model.selectedDate.value.toString(), allDay, startTime, endTime,
-                lastAllDayDateText, selectedId, repeatFrequency?.name, repeatCount))
+                lastAllDayDateText, selectedId, repeatFrequency?.name, repeatCount, venue, address))
         }
     }
     var templatesOpen by remember { mutableStateOf(false) }
@@ -1684,6 +1724,8 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
     }
     var chooser by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var saveFeedback by remember { mutableStateOf("") }
     if (toolsOpen) OutlinedButton(onClick = { templatesOpen = true }, enabled = templates.isNotEmpty()) {
         Text("Use event template (${templates.size})")
     }
@@ -1698,7 +1740,7 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
                         overflow = TextOverflow.Ellipsis)
                     TextButton(onClick = {
                         title = template.title; description = template.description
-                        location = template.location; allDay = template.allDay
+                        venue = template.location; address = ""; allDay = template.allDay
                         lastAllDayDateText = ""
                         startTime = template.startTime; endTime = template.endTime
                         repeatFrequency = template.repeat?.frequency
@@ -1933,9 +1975,35 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
     TextButton(onClick = { locationOpen = !locationOpen }) {
         Text(if (locationOpen) "Hide location" else if (location.isBlank()) "Add location (optional)" else "Edit location")
     }
-    if (locationOpen) OutlinedTextField(value = location,
-        onValueChange = { if (it.length <= 8_192) location = it },
-        label = { Text("Location (optional)") }, modifier = Modifier.fillMaxWidth())
+    if (locationOpen) {
+        OutlinedTextField(value = venue,
+            onValueChange = { if (it.length <= 8_192) venue = it },
+            label = { Text("Venue (optional)") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = address,
+            onValueChange = {
+                if (it.length <= 8_192) { address = it; addressVerified = false; addressCandidates = emptyList() }
+            }, label = { Text(if (addressVerified) "Verified address" else "Street address (optional)") },
+            modifier = Modifier.fillMaxWidth().onFocusChanged { focus ->
+                if (!focus.isFocused && lookupOptIn && !model.offline.value &&
+                    AddressVerification.complete(address))
+                    lookupRequest = address
+            })
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = lookupOptIn, onCheckedChange = {
+                lookupOptIn = it
+                lookupPrefs.edit().putBoolean("enabled", it).apply()
+                if (it && !model.offline.value && AddressVerification.complete(address)) lookupRequest = address
+                if (!it) addressCandidates = emptyList()
+            })
+            Text("Verify completed addresses using Android's location service (may send the address to its provider)",
+                style = MaterialTheme.typography.bodySmall)
+        }
+        addressCandidates.forEach { match ->
+            TextButton(onClick = { address = match.address; addressVerified = true; addressCandidates = emptyList() }) {
+                Text(match.address)
+            }
+        }
+    }
     TextButton(onClick = { descriptionOpen = !descriptionOpen }) {
         Text(if (descriptionOpen) "Hide description" else if (description.isBlank()) "Add description (optional)" else "Edit description")
     }
@@ -1943,7 +2011,19 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         onValueChange = { if (it.length <= 65_536) description = it },
         label = { Text("Description (optional)") }, modifier = Modifier.fillMaxWidth())
     Spacer(Modifier.height(8.dp))
-    if (model.calendars.value.none { it.canCreate }) Text("No writable calendars available.")
+    if (saving) Row(verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
+        Text("Saving event…")
+    }
+    if (saveFeedback.isNotBlank()) Text(saveFeedback,
+        color = if (saveFeedback.startsWith("Could not")) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurface)
+    if (model.calendars.value.none { it.canCreate }) {
+        Text("No writable calendars connected. Connect one before saving an event.",
+            color = MaterialTheme.colorScheme.error)
+        Button(onClick = onAddCalendar) { Text("+ Add Calendar") }
+    }
     else {
         if (selectedId != null && choice == null)
             Text("The selected calendar is unavailable or read-only. Choose another calendar.", color = MaterialTheme.colorScheme.error)
@@ -1954,10 +2034,10 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
             Text(choice.id, style = MaterialTheme.typography.bodySmall)
         }
         OutlinedButton(onClick = { chooser = true }) { Text(if (choice == null) "Choose calendar" else "Change calendar") }
-        Button(onClick = { confirm = true }, enabled = title.isNotBlank() && timedValid &&
+        Button(onClick = { saveFeedback = ""; confirm = true }, enabled = title.isNotBlank() && timedValid &&
             repeatValid && detailsValid && allDayRangeValid && multiDaySupported &&
-            choice != null && !model.loading.value) {
-            Text("Save Event")
+            choice != null && !saving) {
+            Text("Review & Save Event")
         }
         if (confirm) {
             val reviewed = model.selectedWritable(selectedId)
@@ -1973,27 +2053,44 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
                     Text(reviewed?.id ?: "Choose another calendar", style = MaterialTheme.typography.bodySmall)
                     if (reviewed?.provider == CalendarProviderKind.CALDAV ||
                         reviewed?.provider == CalendarProviderKind.HOME_ASSISTANT)
-                        Text("HAM will save this change encrypted on your device and try to send it directly to this calendar server. If unavailable, review pending changes in Settings.",
+                        Text(if (model.offline.value)
+                            "Offline is on. HAM will save this change encrypted on your device and send it after you turn Offline off. Review pending changes in Settings."
+                        else "HAM will save this change encrypted on your device and try to send it directly to this calendar server. If unavailable, review pending changes in Settings.",
                             style = MaterialTheme.typography.bodySmall)
                 } },
                 confirmButton = { Button(onClick = {
+                    if (saving) return@Button
                     val id = reviewed?.id ?: return@Button
-                    val clearDraft = { quickDraftStore.clear(); title = ""; description = ""; location = "";
-                        lastAllDayDateText = ""; confirm = false }
+                    saving = true
+                    confirm = false
+                    saveFeedback = ""
+                    val report: (Boolean, Boolean, String) -> Unit = { accepted, confirmed, detail ->
+                        saving = false
+                        if (accepted) {
+                            val draftCleared = runCatching { quickDraftStore.clear() }.isSuccess
+                            title = ""; description = ""; venue = ""; address = ""
+                            lastAllDayDateText = ""
+                            saveFeedback = (if (confirmed) "Saved and confirmed on the selected calendar. "
+                                else "Saved on this device; provider confirmation or review is pending. ") +
+                                detail + if (draftCleared) "" else " The draft could not be cleared and may reappear."
+                        } else saveFeedback = "Could not save: $detail. Review the calendar and try again."
+                    }
                     if (repeatSpec != null && allDay) model.createRecurringAllDay(id,
-                        model.selectedDate.value, title, repeatSpec, description, location, clearDraft)
+                        model.selectedDate.value, title, repeatSpec, description, location, {}, report)
                     else if (repeatSpec != null) model.createRecurringTimed(id,
                         model.selectedDate.value, normalizedStart, normalizedEnd, title, repeatSpec,
-                        description, location, clearDraft)
+                        description, location, {}, onResult = report)
                     else if (allDay) model.create(id, model.selectedDate.value, title,
-                        description, location, clearDraft,
-                        endExclusive = checkNotNull(allDayEndExclusive))
+                        description, location, {},
+                        endExclusive = checkNotNull(allDayEndExclusive), onResult = report)
                     else model.createTimed(id, model.selectedDate.value, normalizedStart, normalizedEnd, title,
-                        description, location, clearDraft)
+                        description, location, {}, report)
                 }, enabled = reviewed != null && timedValid && repeatValid && detailsValid &&
-                    allDayRangeValid && multiDaySupported && !model.loading.value) {
-                    Text(if (reviewed?.provider == CalendarProviderKind.CALDAV ||
-                        reviewed?.provider == CalendarProviderKind.HOME_ASSISTANT) "Save and sync" else "Create")
+                    allDayRangeValid && multiDaySupported && !saving) {
+                    Text(if (model.offline.value && (reviewed?.provider == CalendarProviderKind.CALDAV ||
+                        reviewed?.provider == CalendarProviderKind.HOME_ASSISTANT)) "Save on device" else
+                        if (reviewed?.provider == CalendarProviderKind.CALDAV ||
+                            reviewed?.provider == CalendarProviderKind.HOME_ASSISTANT) "Save and sync" else "Create")
                 } },
                 dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } })
         }
@@ -2016,7 +2113,7 @@ internal fun CalendarPicker(model: HamViewModel, onDismiss: () -> Unit,
     val prefs = model.calendarPreferences.value
     val writable = CalendarSelection.writable(model.calendars.value)
         .filter { it.id != excludeId && (allowedProvider == null || it.provider == allowedProvider) &&
-            (showHidden || it.id !in prefs.hidden) }
+            (showHidden || model.isCalendarVisible(it)) }
     val groups = CalendarSelection.groups(CalendarSelection.search(writable, query), prefs)
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     AlertDialog(onDismissRequest = onDismiss, title = {
@@ -2028,11 +2125,16 @@ internal fun CalendarPicker(model: HamViewModel, onDismiss: () -> Unit,
         text = { Column {
             OutlinedTextField(query, { query = it }, label = { Text("Search calendars") }, modifier = Modifier.fillMaxWidth())
             TextButton(onClick = { showHidden = !showHidden }) { Text(if (showHidden) "Hide hidden calendars" else "Show hidden calendars") }
+            if (showHidden) Text("Choosing a hidden calendar makes it visible in HAM.",
+                style = MaterialTheme.typography.bodySmall)
             LazyColumn(Modifier.height(if (keyboardVisible) 160.dp else 360.dp)) {
                 groups.forEach { (heading, entries) ->
                     item { Text(heading, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp)) }
                     items(entries, key = { it.id }) { source ->
-                        Column(Modifier.fillMaxWidth().clickable { onSelect(source.id) }.padding(vertical = 8.dp)) {
+                        Column(Modifier.fillMaxWidth().clickable {
+                            if (!model.isCalendarVisible(source)) model.setCalendarVisible(source, true)
+                            onSelect(source.id)
+                        }.padding(vertical = 8.dp)) {
                             Text(source.name, fontWeight = FontWeight.SemiBold)
                             Text("Source: ${source.source}", style = MaterialTheme.typography.bodySmall)
                             Text(source.id, style = MaterialTheme.typography.bodySmall)
@@ -2179,7 +2281,8 @@ private fun SearchPage(model: HamViewModel, openCalendars: (String?) -> Unit,
 }
 
 @Composable
-private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateAvailable: (AvailableUpdate) -> Unit) {
+private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit,
+    openSetup: Boolean, onSetupConsumed: () -> Unit, onUpdateAvailable: (AvailableUpdate) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var address by remember { mutableStateOf("") }
@@ -2190,6 +2293,10 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
     var privacyOpen by remember { mutableStateOf(false) }
     var backupOpen by remember { mutableStateOf(false) }
     var manageOpen by remember { mutableStateOf(false) }
+    var setupOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(openSetup) {
+        if (openSetup) { setupOpen = true; onSetupConsumed() }
+    }
     var showHttpWarning by remember { mutableStateOf(false) }
     var removeLocalOpen by remember { mutableStateOf(false) }
     var davKind by remember { mutableStateOf<DavKind?>(null) }
@@ -2228,7 +2335,8 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
         }
     }
     if (manageOpen) {
-        ManageCalendarsPage(model, onBack = { manageOpen = false })
+        ManageCalendarsPage(model, onBack = { manageOpen = false },
+            onAddCalendar = { manageOpen = false; setupOpen = true })
         return
     }
     if (privacyOpen) {
@@ -2240,7 +2348,29 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
         return
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Text("Calendar", style = MaterialTheme.typography.headlineMedium)
+    Button(onClick = { setupOpen = true }) { Text("+ Add Calendar") }
+    Text("Connect an existing calendar or create a local one. Manage visibility after connecting.",
+        style = MaterialTheme.typography.bodySmall)
+    Text("Start Week On", style = MaterialTheme.typography.titleMedium)
+    WeekStart.entries.forEach { choice ->
+        Row(Modifier.fillMaxWidth().clickable { model.setWeekStart(choice) },
+            verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = model.weekStart.value == choice, onClick = { model.setWeekStart(choice) })
+            Text(choice.label)
+        }
+    }
+    HorizontalDivider(Modifier.padding(vertical = 8.dp))
     Text("Connection", style = MaterialTheme.typography.headlineMedium)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Offline", modifier = Modifier.weight(1f))
+        Switch(checked = model.offline.value, onCheckedChange = model::setOffline)
+    }
+    Text("Use saved calendars without HAM connecting to Home Assistant, CalDAV, ICS feeds, or update servers. " +
+        "Supported remote edits are saved securely on this device and sync after you turn Offline off. " +
+        "Android account calendars may still sync through Android settings.",
+        style = MaterialTheme.typography.bodySmall)
     OutlinedButton(onClick = { backupOpen = true }) { Text("Encrypted local content backup") }
     if (model.connected.value) {
         Text(if (BuildConfig.DEBUG && model.demoPreview.value)
@@ -2330,9 +2460,13 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
         style = MaterialTheme.typography.bodySmall)
     if (model.haPending.value.isNotEmpty()) {
         Text("Pending Home Assistant changes", style = MaterialTheme.typography.titleMedium)
-        Text("Creations, edits and removals stay encrypted on this device. HAM rechecks the calendar before sending. An uncertain request is never resent automatically.",
+        Text("Creations, edits and removals stay encrypted on this device. " +
+            (if (model.offline.value) "HAM pauses server checks until Offline is turned off. "
+            else "HAM rechecks the calendar before sending. ") +
+            "An uncertain request is never resent automatically.",
             style = MaterialTheme.typography.bodySmall)
-        OutlinedButton(onClick = model::syncHaPending, enabled = !model.haBusy.value) {
+        OutlinedButton(onClick = model::syncHaPending,
+            enabled = !model.haBusy.value && !model.offline.value) {
             Text("Check pending Home Assistant changes")
         }
         model.haPending.value.forEach { pending ->
@@ -2343,7 +2477,15 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
                 Text("Discard this pending change")
             }
             if (pending.state == com.tinkercobble.ham.data.HaPendingState.AWAITING_CONFIRMATION) {
-                TextButton(onClick = { retryHaId = pending.id }, enabled = !model.haBusy.value) {
+                TextButton(onClick = { model.checkUncertainHaPending(pending.id) },
+                    enabled = !model.haBusy.value && !model.offline.value) {
+                    Text("Check this change on Home Assistant")
+                }
+                model.haCheckResults.value[pending.id]?.let { result ->
+                    Text(result, style = MaterialTheme.typography.bodySmall)
+                }
+                TextButton(onClick = { retryHaId = pending.id },
+                    enabled = !model.haBusy.value && !model.offline.value) {
                     Text("Review and retry this change")
                 }
             }
@@ -2353,9 +2495,13 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
         style = MaterialTheme.typography.bodySmall)
     if (model.davPending.value.isNotEmpty()) {
         Text("Pending calendar changes", style = MaterialTheme.typography.titleMedium)
-        Text("Changes stay encrypted on this device until the calendar server confirms them. HAM retries queued changes when Android allows network work, even while the app is closed. Conflicts stay for your review.",
+        Text("Changes stay encrypted on this device until the calendar server confirms them. " +
+            (if (model.offline.value) "HAM pauses synchronization until Offline is turned off. "
+            else "HAM retries queued changes when Android allows network work, even while the app is closed. ") +
+            "Conflicts stay for your review.",
             style = MaterialTheme.typography.bodySmall)
-        OutlinedButton(onClick = model::syncDavPending, enabled = !model.davBusy.value) {
+        OutlinedButton(onClick = model::syncDavPending,
+            enabled = !model.davBusy.value && !model.offline.value) {
             Text("Synchronize pending changes")
         }
         model.davPending.value.forEach { pending ->
@@ -2429,6 +2575,49 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
     }
     if (model.davMessage.value.isNotBlank()) Text(model.davMessage.value,
         style = MaterialTheme.typography.bodySmall)
+    if (setupOpen) AlertDialog(onDismissRequest = { setupOpen = false },
+        title = { Text("Add Calendar") },
+        text = { Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Connect an existing calendar", style = MaterialTheme.typography.titleMedium)
+            Text("Android calendars already synchronized to this device, including Google calendars, need Android calendar permission. HAM does not sign in to Google separately.",
+                style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = {
+                setupOpen = false
+                if (model.androidPermissionGranted.value) { model.enableAndroidCalendars(); onConnected() }
+                else androidCalendarPermission.launch(Manifest.permission.READ_CALENDAR)
+            }) { Text("Android & Google calendars") }
+            OutlinedButton(onClick = { setupOpen = false; davKind = DavKind.ICLOUD }) {
+                Text("iCloud Calendar") }
+            OutlinedButton(onClick = { setupOpen = false; davKind = DavKind.CALDAV }) {
+                Text("CalDAV server") }
+            OutlinedTextField(address, { address = it }, label = { Text("Home Assistant address") },
+                placeholder = { Text("https://your-home-assistant.example") }, modifier = Modifier.fillMaxWidth())
+            OutlinedButton(onClick = {
+                setupOpen = false
+                if (model.connected.value) model.beginAuth(model.server.value)
+                else if (address.trim().startsWith("http://", ignoreCase = true)) showHttpWarning = true
+                else model.beginAuth(address)
+            }, enabled = model.connected.value || address.isNotBlank()) {
+                Text(if (model.connected.value) "Reconnect Home Assistant" else "Connect Home Assistant")
+            }
+            OutlinedButton(onClick = { setupOpen = false; icsConnectOpen = true }) {
+                Text("ICS subscription (read-only)") }
+            HorizontalDivider()
+            Text("Create a new calendar", style = MaterialTheme.typography.titleMedium)
+            Text("HAM can create a local Android calendar on this device after you allow calendar reading and editing. Google, iCloud and Home Assistant calendars are created in their own services.",
+                style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = {
+                setupOpen = false
+                if (model.androidEnabled.value && model.androidWritePermissionGranted.value)
+                    model.createLocalCalendar()
+                else error = "Connect Android calendars and allow editing below, then choose Create or find HAM local calendar."
+            }) { Text("Create HAM local calendar") }
+            if (model.calendars.value.isNotEmpty()) OutlinedButton(onClick = {
+                setupOpen = false; manageOpen = true
+            }) { Text("Manage connected calendars") }
+        } },
+        confirmButton = { TextButton(onClick = { setupOpen = false }) { Text("Done") } })
     davKind?.let { kind -> DavConnectDialog(kind, model, onClose = { davKind = null }) }
     if (icsConnectOpen) IcsConnectDialog(model, onClose = { icsConnectOpen = false })
     removeIcsId?.let { id -> AlertDialog(onDismissRequest = { removeIcsId = null },
@@ -2559,7 +2748,7 @@ private fun SettingsPage(model: HamViewModel, onConnected: () -> Unit, onUpdateA
             result.update?.let(onUpdateAvailable)
             checkingUpdate = false
         }
-    }, enabled = !checkingUpdate) { Text(if (checkingUpdate) "Checking…" else "Check for updates") }
+    }, enabled = !checkingUpdate && !model.offline.value) { Text(if (checkingUpdate) "Checking…" else "Check for updates") }
     if (updateMessage.isNotBlank()) Text(updateMessage)
     }
 }
@@ -2624,7 +2813,8 @@ private fun IcsConnectDialog(model: HamViewModel, onClose: () -> Unit) {
 }
 
 @Composable
-private fun ManageCalendarsPage(model: HamViewModel, onBack: () -> Unit, focusId: String? = null) {
+private fun ManageCalendarsPage(model: HamViewModel, onBack: () -> Unit,
+    onAddCalendar: () -> Unit, focusId: String? = null) {
     var query by remember(focusId) { mutableStateOf(focusId.orEmpty()) }
     var colorTarget by remember { mutableStateOf<CalendarSource?>(null) }
     var diagnosticsOpen by remember { mutableStateOf(false) }
@@ -2638,8 +2828,9 @@ private fun ManageCalendarsPage(model: HamViewModel, onBack: () -> Unit, focusId
         .possibleNameGroups(model.calendars.value)
     LazyColumn(Modifier.fillMaxSize()) {
         item { Column {
-        TextButton(onClick = onBack) { Text("‹ Settings") }
+        TextButton(onClick = onBack) { Text("‹ Back") }
         Text("Calendars", style = MaterialTheme.typography.headlineMedium)
+        Button(onClick = onAddCalendar) { Text("+ Add Calendar") }
         Text("Visibility, colors, favorites, and your Quick Add default are stored on this device.",
             style = MaterialTheme.typography.bodySmall)
         if (model.calendars.value.isEmpty()) Text("No calendars discovered. Connect a source in Settings to review its calendars here.",
@@ -2856,6 +3047,9 @@ private fun CalendarDiagnosticsPage(model: HamViewModel, onBack: () -> Unit) {
                     Text("Last successful read: ${diagnostic?.lastSuccess?.let(dateTime::format) ?: "Not recorded"}")
                     if (diagnostic?.lastError != null) Text("Last issue: ${diagnostic.lastError.label}" +
                         (diagnostic.lastErrorAt?.let { " · ${dateTime.format(it)}" } ?: ""))
+                    model.davReadDetails.value[source.id]?.takeIf { it.isNotBlank() }?.let {
+                        Text("This read: $it", style = MaterialTheme.typography.bodySmall)
+                    }
                     Text("Loaded events: $cached · Pending changes: $pending")
                 }
                 HorizontalDivider()

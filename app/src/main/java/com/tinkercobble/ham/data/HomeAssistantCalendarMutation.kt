@@ -6,6 +6,13 @@ import java.time.ZoneId
 
 /** Validate one nonrecurring event against a fresh provider read before deletion. */
 object HomeAssistantCalendarMutation {
+    fun targetFromUpdateCommand(command: JSONObject): HaTarget {
+        require(command.optString("type") == "calendar/event/update")
+        val event = command.getJSONObject("event")
+        return HaTarget(event.getString("summary"), event.getString("dtstart"),
+            event.getString("dtend"), event.getString("description"),
+            event.getString("location"))
+    }
     /** HA's create schema has no client UID; a preflight prevents known duplicates. */
     fun createCommand(source: CalendarSource, proposed: AgendaEvent,
         live: List<AgendaEvent>): JSONObject {
@@ -31,8 +38,8 @@ object HomeAssistantCalendarMutation {
         }
         return JSONObject().put("id", 1).put("type", "calendar/event/create")
             .put("entity_id", source.id).put("event", JSONObject()
-                .put("summary", proposed.summary).put("start", proposed.start)
-                .put("end", proposed.end).put("description", proposed.description)
+                .put("summary", proposed.summary).put("dtstart", proposed.start)
+                .put("dtend", proposed.end).put("description", proposed.description)
                 .put("location", proposed.location))
     }
 
@@ -84,7 +91,7 @@ object HomeAssistantCalendarMutation {
         }
         return JSONObject().put("id", 1).put("type", "calendar/event/update")
             .put("entity_id", source.id).put("uid", chosen.uid)
-            .put("event", JSONObject().put("start", target.start).put("end", target.end)
+            .put("event", JSONObject().put("dtstart", target.start).put("dtend", target.end)
                 .put("summary", target.summary).put("description", target.description)
                 .put("location", target.location))
     }
@@ -97,8 +104,8 @@ object HomeAssistantCalendarMutation {
             command.optString("uid") != chosen.uid) return false
         val current = live.filter { it.calendarId == source.id && it.uid == chosen.uid }
             .singleOrNull() ?: return false
-        val start = target.optString("start")
-        val end = target.optString("end")
+        val start = target.optString("dtstart")
+        val end = target.optString("dtend")
         val sameBounds = if (chosen.allDay) current.start == start && current.end == end else
             AgendaEvent.instant(current.start) == AgendaEvent.instant(start) &&
                 AgendaEvent.instant(current.end) == AgendaEvent.instant(end) &&
@@ -164,7 +171,7 @@ object HomeAssistantCalendarMutation {
         val details = if (description != null || location != null)
             EventDraftDetails.of(description ?: chosen.description, location ?: chosen.location)
         else EventDraftDetails(chosen.description, chosen.location)
-        val edited = JSONObject().put("start", bounds.first).put("end", bounds.second)
+        val edited = JSONObject().put("dtstart", bounds.first).put("dtend", bounds.second)
             .put("summary", cleanTitle).put("description", details.description)
             .put("location", details.location)
         return JSONObject().put("id", 1).put("type", "calendar/event/update")

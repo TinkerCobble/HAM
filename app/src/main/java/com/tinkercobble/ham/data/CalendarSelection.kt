@@ -33,6 +33,12 @@ data class CalendarPreferences(
 }
 
 object CalendarSelection {
+    /** Previously seen HA IDs keep their choices; newly discovered IDs start hidden. */
+    fun hideNewHomeAssistantCalendars(prefs: CalendarPreferences, discovered: Set<String>,
+        known: Set<String>?, cached: Set<String>, preserveLegacySession: Boolean = false): CalendarPreferences {
+        val previous = known ?: if (preserveLegacySession) discovered else cached
+        return prefs.copy(hidden = prefs.hidden + (discovered - previous))
+    }
     data class AndroidReconciliation(val preferences: CalendarPreferences,
         val visibleIds: Set<String>, val fingerprints: Map<String, String>,
         val choicesRemoved: Boolean)
@@ -96,6 +102,9 @@ object CalendarSelection {
     fun writable(calendars: List<CalendarSource>) = calendars.filter { it.canCreate }.distinctBy { it.id }
     fun resolveWritable(id: String?, calendars: List<CalendarSource>): CalendarSource? =
         id?.let { wanted -> calendars.singleOrNull { it.id == wanted && it.canCreate } }
+    fun resolveVisibleWritable(id: String?, calendars: List<CalendarSource>,
+        visible: (CalendarSource) -> Boolean): CalendarSource? =
+        resolveWritable(id, calendars)?.takeIf(visible)
 
     fun search(calendars: List<CalendarSource>, query: String): List<CalendarSource> {
         val term = query.trim()

@@ -14,7 +14,7 @@ import javax.crypto.spec.GCMParameterSpec
 data class QuickAddDraft(val title: String, val description: String, val location: String,
     val date: String, val allDay: Boolean, val start: String, val end: String,
     val lastDay: String, val calendarId: String?, val repeatFrequency: String?,
-    val repeatCount: String)
+    val repeatCount: String, val venue: String = location, val address: String = "")
 
 /** Device-private encrypted form state; this never creates a provider event. */
 class QuickAddDraftStore(context: Context) {
@@ -35,6 +35,7 @@ class QuickAddDraftStore(context: Context) {
     fun save(draft: QuickAddDraft) {
         val value = JSONObject().put("title", draft.title).put("description", draft.description)
             .put("location", draft.location).put("date", draft.date).put("all_day", draft.allDay)
+            .put("venue", draft.venue).put("address", draft.address)
             .put("start", draft.start).put("end", draft.end).put("last_day", draft.lastDay)
             .put("calendar", draft.calendarId).put("repeat", draft.repeatFrequency)
             .put("count", draft.repeatCount).toString()
@@ -55,7 +56,9 @@ class QuickAddDraftStore(context: Context) {
             value.optString("end"), value.optString("last_day"),
             if (value.isNull("calendar")) null else value.optString("calendar").ifBlank { null },
             if (value.isNull("repeat")) null else value.optString("repeat").ifBlank { null },
-            value.optString("count"))
+            value.optString("count"),
+            if (value.has("venue")) value.optString("venue") else value.optString("location"),
+            value.optString("address"))
     } catch (_: Exception) { null }
 
     fun clear() { prefs.edit().remove("draft").apply() }

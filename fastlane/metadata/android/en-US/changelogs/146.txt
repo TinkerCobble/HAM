@@ -1,0 +1,5 @@
+Calendar setup is easier to find on phones and tablets. You can choose Sunday, Monday, or your system setting as the first day of the week.
+
+Offline mode keeps supported calendar changes on your device until HAM reconnects. Home Assistant changes with an uncertain result can be checked individually before retrying.
+
+This update preserves the existing canonical HAM app and its local data. Some provider and feature acceptance work remains in progress.

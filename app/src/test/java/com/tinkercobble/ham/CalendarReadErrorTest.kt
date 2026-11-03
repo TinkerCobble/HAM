@@ -14,6 +14,12 @@ class CalendarReadErrorTest {
             CalendarReadError.from("Unsupported recurrence"))
         assertEquals(CalendarReadError.PARTIAL,
             CalendarReadError.from("Some CalDAV items could not be read"))
+        assertEquals(CalendarReadError.MISSING_DATA,
+            CalendarReadError.from("Some CalDAV item data was missing"))
+        assertEquals(CalendarReadError.UNPARSEABLE_DATA,
+            CalendarReadError.from("Some CalDAV item data could not be parsed"))
+        assertEquals(CalendarReadError.UNVERIFIED_METADATA,
+            CalendarReadError.from("Some CalDAV item metadata could not be verified"))
         assertEquals(CalendarReadError.UNAVAILABLE,
             CalendarReadError.from("Network unavailable"))
         assertEquals(CalendarReadError.OTHER,

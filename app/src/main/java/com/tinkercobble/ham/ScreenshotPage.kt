@@ -85,9 +85,10 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
     var duplicatePrompt by remember { mutableStateOf(false) }
     val selectedCalendar = model.selectedWritable(calendarId)
 
-    LaunchedEffect(lookupRequest, lookupOptIn) {
+    LaunchedEffect(lookupRequest, lookupOptIn, model.offline.value) {
         val query = lookupRequest
-        if (query.isBlank() || !lookupOptIn || !AddressVerification.complete(query)) return@LaunchedEffect
+        if (query.isBlank() || !lookupOptIn || model.offline.value ||
+            !AddressVerification.complete(query)) return@LaunchedEffect
         try {
             val matches = AddressVerification.lookup(context, query)
             if (lookupOptIn && address == query) candidates = matches
@@ -130,6 +131,10 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
     }
 
     fun save(allowDuplicate: Boolean) {
+        if (model.offline.value) {
+            error = "Turn off Offline to upload a screenshot to Home Assistant"
+            return
+        }
         val file = image ?: return
         val day = runCatching { LocalDate.parse(date.trim()) }.getOrNull()
         val begins = if (allDay) null else EventEntryTime.parse(start)
@@ -184,6 +189,10 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
     }
 
     fun cancel() {
+        if (model.offline.value && !writeAttempted && attachmentId != null) {
+            error = "Turn off Offline to remove the uploaded screenshot"
+            return
+        }
         working = true
         scope.launch {
             try {
@@ -284,14 +293,15 @@ internal fun ScreenshotPage(model: HamViewModel, uri: Uri?, onCancel: () -> Unit
             OutlinedTextField(address, { address = it; addressVerified = false; candidates = emptyList() },
                 label = { Text(if (addressVerified) "Verified address" else "Street address (optional)") },
                 modifier = Modifier.fillMaxWidth().onFocusChanged { focus ->
-                    if (!focus.isFocused && lookupOptIn && AddressVerification.complete(address))
+                    if (!focus.isFocused && lookupOptIn && !model.offline.value &&
+                        AddressVerification.complete(address))
                         lookupRequest = address
                 })
             Row {
                 Switch(checked = lookupOptIn, onCheckedChange = {
                     lookupOptIn = it
                     lookupPrefs.edit().putBoolean("enabled", it).apply()
-                    if (it && AddressVerification.complete(address)) lookupRequest = address
+                    if (it && !model.offline.value && AddressVerification.complete(address)) lookupRequest = address
                     if (!it) candidates = emptyList()
                 })
                 Text("Verify completed addresses using Android's location service (may send the address to its provider)",

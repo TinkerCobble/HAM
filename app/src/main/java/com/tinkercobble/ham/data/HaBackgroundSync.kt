@@ -23,6 +23,7 @@ object HaBackgroundSync {
 
     fun scheduleIfQueued(context: Context, newMutation: Boolean,
         continuation: Boolean = false): Operation? {
+        if (OfflineMode.enabled(context)) return null
         if (!shouldSchedule(PendingHaMutations(context).list().map { it.state }, continuation))
             return null
         val request = OneTimeWorkRequestBuilder<HaSyncWorker>()
@@ -38,11 +39,12 @@ object HaBackgroundSync {
 
 class HaSyncWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
     override fun doWork(): Result = try {
+        if (OfflineMode.enabled(applicationContext)) Result.success() else {
         val queue = PendingHaMutations(applicationContext)
         val client = HomeAssistantClient(applicationContext)
         val result = runBlocking {
             HaMutationDispatcher.flush(queue, client.mutationTransport(), maxItems = 2,
-                shouldContinue = { !isStopped })
+                shouldContinue = { !isStopped && !OfflineMode.enabled(applicationContext) })
         }
         if (isStopped || result.networkFailure) Result.retry() else {
             if (queue.list().any { it.state == HaPendingState.QUEUED }) {
@@ -50,6 +52,7 @@ class HaSyncWorker(context: Context, parameters: WorkerParameters) : Worker(cont
                     ?.result?.get(10, TimeUnit.SECONDS)
             }
             Result.success()
+        }
         }
     } catch (_: Exception) { Result.retry() }
 }

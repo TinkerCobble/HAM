@@ -39,6 +39,36 @@ class CalendarPreferenceStore(context: Context) {
         else edit.apply()
     }
 
+    /** Null means this installation predates explicit HA discovery tracking. */
+    fun loadKnownHomeAssistant(server: String): Set<String>? {
+        if (server.isBlank()) return null
+        return prefs.getStringSet(prefix(server) + "known_ha", null)?.toSet()
+    }
+
+    fun saveKnownHomeAssistant(server: String, ids: Set<String>) {
+        if (server.isBlank()) return
+        check(prefs.edit().putStringSet(prefix(server) + "known_ha", ids.toSet()).commit()) {
+            "Could not save Home Assistant calendar identities"
+        }
+    }
+
+    /** One-time upgrade marker: retain old visibility when an existing session predates this feature. */
+    fun prepareHomeAssistantSelectionMigration(existingSession: Boolean): Boolean {
+        if (!prefs.contains("ha_selection_migration_initialized")) {
+            check(prefs.edit().putBoolean("ha_selection_migration_initialized", true)
+                .putBoolean("ha_legacy_session_pending", existingSession).commit()) {
+                "Could not prepare Home Assistant calendar migration"
+            }
+        }
+        return prefs.getBoolean("ha_legacy_session_pending", false)
+    }
+
+    fun completeHomeAssistantSelectionMigration() {
+        check(prefs.edit().putBoolean("ha_legacy_session_pending", false).commit()) {
+            "Could not complete Home Assistant calendar migration"
+        }
+    }
+
     fun loadPosition(server: String): CalendarPosition {
         val today = LocalDate.now()
         if (server.isBlank()) return CalendarPosition(today, today, today, "Today")
