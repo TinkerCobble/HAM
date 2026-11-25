@@ -62,7 +62,8 @@ object DavConnection {
             (if (collection.canCreate) 1 else 0) or (if (collection.canUpdate) 4 else 0) or
                 (if (collection.canDelete) 2 else 0),
             if (account.kind == DavKind.ICLOUD) "iCloud" else "CalDAV",
-            provider = CalendarProviderKind.CALDAV)
+            provider = CalendarProviderKind.CALDAV,
+            logicalIdentity = CalendarLogicalIdentity.calDav(collection.url))
     }
     private val propfind = """<?xml version="1.0" encoding="utf-8"?>
         <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">

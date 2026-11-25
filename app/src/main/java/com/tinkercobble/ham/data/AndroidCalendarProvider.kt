@@ -863,9 +863,13 @@ class AndroidCalendarProvider(private val context: Context) {
                         if (local) cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Calendars.CAL_SYNC1))
                         else null).joinToString("\u0000") { it.orEmpty() }.toByteArray(Charsets.UTF_8)
                 ).joinToString("") { "%02x".format(it) }
+                val logicalIdentity = if (local) null else CalendarLogicalIdentity.android(
+                    cursor.getString(accountCol), cursor.getString(typeCol),
+                    cursor.getString(internalNameCol),
+                    cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Calendars._SYNC_ID)))
                 result += CalendarSource("android:$id", name, features,
                     if (local) "HAM local · this device" else "Android · $account",
-                    color, CalendarProviderKind.ANDROID, fingerprint)
+                    color, CalendarProviderKind.ANDROID, fingerprint, logicalIdentity)
             }
         }
         return result

@@ -4,9 +4,20 @@ import com.tinkercobble.ham.data.CalendarProviderKind
 import com.tinkercobble.ham.data.CalendarSource
 import com.tinkercobble.ham.data.CalendarSourceOverview
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CalendarSourceOverviewTest {
+    @Test fun logicalMatchesAreReviewHintsAndNamesAloneDoNotMatch() {
+        val one = CalendarSource("android:1", "Same name", 7,
+            provider = com.tinkercobble.ham.data.CalendarProviderKind.ANDROID,
+            logicalIdentity = "android-provider:v1:abc")
+        val two = one.copy(id = "android:22")
+        val unrelated = one.copy(id = "android:3", logicalIdentity = null)
+        assertEquals(listOf(listOf(one, two)),
+            CalendarSourceOverview.possibleLogicalGroups(listOf(one, two, unrelated)))
+        assertTrue(CalendarSourceOverview.possibleLogicalGroups(listOf(one, unrelated)).isEmpty())
+    }
     @Test fun countsAndHintsNeverCollapseSources() {
         val ha = CalendarSource("calendar.synthetic", "Family events", 0)
         val android = CalendarSource("android:4", "  FAMILY  events ", 1,

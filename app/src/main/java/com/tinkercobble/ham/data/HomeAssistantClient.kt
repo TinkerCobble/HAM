@@ -149,7 +149,8 @@ class HomeAssistantClient(context: Context) {
         return (0 until array.length()).map { array.getJSONObject(it) }
             .map { CalendarSource(it.getString("entity_id"), it.optString("name", it.getString("entity_id")), features[it.getString("entity_id")] ?: 0,
                 it.optString("source").ifBlank { "Not provided by Home Assistant" },
-                it.optString("color").takeIf { color -> Regex("#[0-9A-Fa-f]{6}").matches(color) } ?: colors[it.getString("entity_id")]) }
+                it.optString("color").takeIf { color -> Regex("#[0-9A-Fa-f]{6}").matches(color) } ?: colors[it.getString("entity_id")],
+                logicalIdentity = CalendarLogicalIdentity.homeAssistant(server, it.getString("entity_id"))) }
             .sortedBy { it.name.lowercase() }
     }
 

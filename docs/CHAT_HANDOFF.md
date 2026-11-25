@@ -1,5 +1,9 @@
 # Public HAM — Chat and Codex handoff
 
+## 2026-11-25 local code160 audit candidate
+
+An isolated public-repository worktree stages reviewed canonical 0.3.44/code160 app and synthetic test source without private Git history or data. Local 193 JVM tests, release lint/build, current-file privacy/Gitleaks and exact private/public unsigned APK SHA-256 parity passed. The current anonymous public site/feed remain code146. Physical disposable provider-write and private service startup gates, public CI, signed artifact/source archive audit and feed-last deployment are pending. Do not present this worktree as an already published release.
+
 ## Code146 public publication — 2026-11-03
 
 - **Source:** audited code146 source snapshot `5e514bc` was merged through PR 1 after all three GitHub checks passed. Separate public history contains no private development commits.

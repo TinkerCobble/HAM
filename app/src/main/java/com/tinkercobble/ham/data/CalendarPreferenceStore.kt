@@ -24,6 +24,9 @@ class CalendarPreferenceStore(context: Context) {
             prefs.getString(key + "recent", ""),
             prefs.getString(key + "colors", ""),
             prefs.getString(key + "view", null),
+            prefs.getStringSet(key + "mirror_hidden", emptySet()),
+            prefs.getString(key + "order", ""),
+            prefs.getString(key + "default_view", null),
         )
     }
     fun save(server: String, value: CalendarPreferences, durable: Boolean = false) {
@@ -35,6 +38,10 @@ class CalendarPreferenceStore(context: Context) {
             .putString(key + "recent", value.recentString())
             .putString(key + "colors", value.colorString())
             .putString(key + "view", value.view.name)
+            .putString(key + "default_view", value.defaultView.name)
+            .putStringSet(key + "mirror_hidden", value.mirrorHidden.toSet())
+            .putString(key + "order", value.order.entries.sortedBy { it.key }
+                .joinToString("\n") { "${it.key}\t${it.value}" })
         if (durable) check(edit.commit()) { "Could not save migrated calendar settings" }
         else edit.apply()
     }
@@ -69,13 +76,11 @@ class CalendarPreferenceStore(context: Context) {
         }
     }
 
-    fun loadPosition(server: String): CalendarPosition {
+    fun loadPosition(@Suppress("UNUSED_PARAMETER") server: String): CalendarPosition {
         val today = LocalDate.now()
-        if (server.isBlank()) return CalendarPosition(today, today, today, "Today")
-        val key = prefix(server)
-        fun date(suffix: String) = runCatching { LocalDate.parse(prefs.getString(key + suffix, null)) }.getOrDefault(today)
-        return CalendarPosition(date("selected_date"), date("calendar_anchor"), date("month_day"),
-            prefs.getString(key + "agenda", "Today").takeIf { it == "Calendar" } ?: "Today")
+        // A fresh activity always opens on today. Saved browsing position is retained
+        // for compatibility but never used as a launch target.
+        return CalendarPosition(today, today, today, "Today")
     }
 
     fun savePosition(server: String, position: CalendarPosition) {

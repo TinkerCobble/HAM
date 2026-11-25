@@ -1,4 +1,8 @@
-# Public HAM status — 2026-10-29
+# Public HAM status — 2026-11-25
+
+## Local code160 source audit — not published
+
+This isolated worktree stages canonical 0.3.44/code160 application and synthetic-test source as reviewed files from the private development tree. It contains no private Git history, signing material, personal calendar records or device captures. The public download and update feed remain code146. Local 193 JVM tests, release lint/build, source privacy and Gitleaks scans pass. The unsigned release APK SHA-256 matches the private code160 source build exactly. The signed code160 APK is installed privately on Note8 and Pixel, where the current-date month screen was checked. Disposable real-provider write acceptance, private sync startup acceptance, public CI and exact signed artifact/source/site/feed publication remain open. This audit branch is local and is not a public release.
 
 ## 2026-11-03 code146 public release
 

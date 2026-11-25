@@ -49,7 +49,8 @@ class AgendaCache(context: Context) {
                 if (it.isNull("color")) null else it.optString("color").ifBlank { null },
                 runCatching { CalendarProviderKind.valueOf(it.optString("provider", "HOME_ASSISTANT")) }
                     .getOrDefault(CalendarProviderKind.HOME_ASSISTANT),
-                if (it.isNull("fingerprint")) null else it.optString("fingerprint").ifBlank { null }) }
+                if (it.isNull("fingerprint")) null else it.optString("fingerprint").ifBlank { null },
+                it.optString("logical_identity").ifBlank { null }) }
         } }
         val events = data.getJSONArray("events").let { array -> (0 until array.length()).map { i ->
             array.getJSONObject(i).let { AgendaEvent(it.getString("calendar_id"), it.getString("calendar_name"),
@@ -72,7 +73,8 @@ class AgendaCache(context: Context) {
         val calendars = JSONArray()
         agenda.calendars.forEach { source -> calendars.put(JSONObject().put("id", source.id).put("name", source.name)
             .put("features", source.features).put("source", source.source).put("color", source.haColor)
-            .put("provider", source.provider.name).put("fingerprint", source.identityFingerprint)) }
+            .put("provider", source.provider.name).put("fingerprint", source.identityFingerprint)
+            .put("logical_identity", source.logicalIdentity)) }
         val events = JSONArray()
         agenda.events.sortedBy { event -> kotlin.math.abs(ChronoUnit.DAYS.between(focusDate, event.date)) }
             .take(2000).forEach { event -> events.put(JSONObject()

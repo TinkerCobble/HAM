@@ -9,6 +9,8 @@ import java.util.Locale
 enum class CalendarView(val label: String, val days: Long) {
     MONTH("Month", 0), WEEK("Next 7 days", 7), THREE_DAYS("3 days", 3);
 
+    fun next(): CalendarView = entries[(ordinal + 1) % entries.size]
+
     fun range(anchor: LocalDate): DateRange = when (this) {
         MONTH -> DateRange(anchor.withDayOfMonth(1), anchor.withDayOfMonth(1).plusMonths(1))
         else -> DateRange(anchor, anchor.plusDays(days))

@@ -25,7 +25,8 @@ object IcsConnection {
     }
 
     fun source(item: IcsSubscription) = CalendarSource("ics:${item.id}", item.name, 0,
-        "ICS subscription", provider = CalendarProviderKind.ICS)
+        "ICS subscription", provider = CalendarProviderKind.ICS,
+        logicalIdentity = CalendarLogicalIdentity.ics(item.url))
 
     fun fetch(item: IcsSubscription, range: DateRange,
         http: OkHttpClient = client): IcsRead {
