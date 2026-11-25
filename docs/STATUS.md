@@ -4,6 +4,8 @@
 
 This isolated worktree stages canonical 0.3.44/code160 application and synthetic-test source as reviewed files from the private development tree. It contains no private Git history, signing material, personal calendar records or device captures. The public download and update feed remain code146. Local 193 JVM tests, release lint/build, source privacy and Gitleaks scans pass. The unsigned release APK SHA-256 matches the private code160 source build exactly. The signed code160 APK is installed privately on Note8 and Pixel, where the current-date month screen was checked. Disposable real-provider write acceptance, private sync startup acceptance, public CI and exact signed artifact/source/site/feed publication remain open. This audit branch is local and is not a public release.
 
+An attempted push of this audit branch was rejected with HTTP 403 because local Git authenticated with the wrong account. No public branch or CI run exists. The local commit and verified private recovery bundle remain available for a later authorized push.
+
 ## 2026-11-03 code146 public release
 
 HAM 0.3.30/code146 is the current public download and canonical update feed. The signed APK was installed in place Note8 first, then Pixel and tablet; hashes, signer, package and first-install dates matched. Public source snapshot `5e514bc` passed GitHub privacy CI and exact unsigned build parity. Public APK/source downloads and feed were read back successfully. Broader provider acceptance and full project completion remain open; Android can require install approval.
