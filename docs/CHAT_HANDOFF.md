@@ -2,7 +2,7 @@
 
 ## 2026-11-25 code164 local publication audit
 
-- **Source:** isolated public audit branch based on the existing code160 candidate; reviewed app files advance to code164 with page Back and read-only existing-event navigation. Private Git history and sensitive project records were not copied.
+- **Source:** isolated local `codex/code164-publication-audit` at `2e99c39`, based on the existing code160 candidate; reviewed app files advance to code164 with page Back and read-only existing-event navigation. Private Git history and sensitive project records were not copied.
 - **Checks:** clean unsigned APK matches the clean private code164 build byte for byte; JVM tests, release lint/build, source privacy and Gitleaks current/history pass.
 - **Release state:** the exact signed APK was installed Note8 first and Pixel second, but public source push/CI is blocked by read-only GitHub access. Disposable provider write and private-service acceptance are still open. Website/feed stays code146; no public release occurred.
 
