@@ -1,5 +1,9 @@
 # Public HAM status — 2026-11-25
 
+## Local code164 source audit — not published
+
+The isolated public audit worktree now includes the reviewed code164/0.3.48 application correction for page Back and read-only existing Android event discovery. Its clean unsigned APK SHA-256 matches the private clean build exactly (`44B4718FD5BA059104B7E502EB350F7DB205AED322901490A5DA6439094E9499`). JVM tests, release lint/build, source privacy and Gitleaks current/history passed. The same privately signed code164 APK installed Note8 first and Pixel second in place; both launched. This local source branch cannot be pushed or run in public CI because the connected GitHub account has read-only access to `TinkerCobble/HAM`. Disposable real-provider write acceptance and persistent private-service acceptance remain open. Public website/feed remains code146; no artifact or source was published.
+
 ## Local code160 source audit — not published
 
 This isolated worktree stages canonical 0.3.44/code160 application and synthetic-test source as reviewed files from the private development tree. It contains no private Git history, signing material, personal calendar records or device captures. The public download and update feed remain code146. Local 193 JVM tests, release lint/build, source privacy and Gitleaks scans pass. The unsigned release APK SHA-256 matches the private code160 source build exactly. The signed code160 APK is installed privately on Note8 and Pixel, where the current-date month screen was checked. Disposable real-provider write acceptance, private sync startup acceptance, public CI and exact signed artifact/source/site/feed publication remain open. This audit branch is local and is not a public release.

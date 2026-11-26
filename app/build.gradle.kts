@@ -14,8 +14,8 @@ android {
         applicationId = "com.tinkercobble.ham"
         minSdk = 28
         targetSdk = 36
-        versionCode = 160
-        versionName = "0.3.44"
+        versionCode = 164
+        versionName = "0.3.48"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resValue("string", "app_name", "HAM")
     }

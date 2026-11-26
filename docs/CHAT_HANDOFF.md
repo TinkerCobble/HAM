@@ -1,5 +1,11 @@
 # Public HAM — Chat and Codex handoff
 
+## 2026-11-25 code164 local publication audit
+
+- **Source:** isolated public audit branch based on the existing code160 candidate; reviewed app files advance to code164 with page Back and read-only existing-event navigation. Private Git history and sensitive project records were not copied.
+- **Checks:** clean unsigned APK matches the clean private code164 build byte for byte; JVM tests, release lint/build, source privacy and Gitleaks current/history pass.
+- **Release state:** the exact signed APK was installed Note8 first and Pixel second, but public source push/CI is blocked by read-only GitHub access. Disposable provider write and private-service acceptance are still open. Website/feed stays code146; no public release occurred.
+
 ## 2026-11-25 local code160 audit candidate
 
 An isolated public-repository worktree stages reviewed canonical 0.3.44/code160 app and synthetic test source without private Git history or data. Local 193 JVM tests, release lint/build, current-file privacy/Gitleaks and exact private/public unsigned APK SHA-256 parity passed. The current anonymous public site/feed remain code146. Physical disposable provider-write and private service startup gates, public CI, signed artifact/source archive audit and feed-last deployment are pending. Do not present this worktree as an already published release.

@@ -2070,6 +2070,20 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         }
         finally { loading.value = false }
     }
+    /** Fresh, read-only lookup after a duplicate rejection; never retries the write. */
+    suspend fun findExistingAndroidTimed(calendarId: String, date: LocalDate,
+        startText: String, endText: String, title: String): AgendaEvent? {
+        val source = calendars.value.singleOrNull {
+            it.id == calendarId && it.provider == CalendarProviderKind.ANDROID
+        } ?: return null
+        val time = com.tinkercobble.ham.data.TimedEventTime.parse(date, startText, endText)
+        return withContext(Dispatchers.IO) {
+            androidProvider.events(listOf(source), DateRange(date, date.plusDays(1)))
+                .firstOrNull { event -> !event.allDay && event.summary.equals(title.trim(), true) &&
+                    AgendaEvent.instant(event.start) == time.start.toInstant() &&
+                    AgendaEvent.instant(event.end) == time.end.toInstant() }
+        }
+    }
     fun moveAndroidEvent(event: AgendaEvent, destinationId: String, draft: IcsImportDraft,
         done: () -> Unit) = viewModelScope.launch {
         loading.value = true

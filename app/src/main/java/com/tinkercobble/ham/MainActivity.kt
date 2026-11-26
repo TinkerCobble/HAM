@@ -68,6 +68,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -233,6 +234,18 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
     val activity = context as ComponentActivity
     val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf(if (model.hasAgendaSource) "Calendar" else "Settings") }
+    val pageHistory = remember { mutableStateListOf<String>() }
+    fun showPage(destination: String) {
+        if (destination != page) {
+            if (pageHistory.size >= 32) pageHistory.removeAt(0)
+            pageHistory.add(page)
+            page = destination
+        }
+    }
+    fun goBack() {
+        if (pageHistory.isNotEmpty()) page = pageHistory.removeAt(pageHistory.lastIndex)
+    }
+    BackHandler(pageHistory.isNotEmpty()) { goBack() }
     LaunchedEffect(model.message.value) {
         val notice = model.message.value
         if (notice == "Calendars updated" || notice == "Loaded information cleared") {
@@ -245,25 +258,25 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
     var screenshotUri by remember { mutableStateOf<Uri?>(null) }
     var photoImportUri by remember { mutableStateOf<Uri?>(null) }
     val screenshotPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) { screenshotUri = uri; page = "Screenshot" }
+        if (uri != null) { screenshotUri = uri; showPage("Screenshot") }
     }
     LaunchedEffect(sharedScreenshot) {
-        if (sharedScreenshot != null) { photoImportUri = sharedScreenshot; page = "Image Action"; clearShare() }
+        if (sharedScreenshot != null) { photoImportUri = sharedScreenshot; showPage("Image Action"); clearShare() }
     }
-    var returnPage by remember { mutableStateOf("Today") }
     var manageId by remember { mutableStateOf<String?>(null) }
     var setupRequested by remember { mutableStateOf(false) }
     val calendarScroll = rememberLazyListState()
+    var focusExistingEvent by remember { mutableStateOf<AgendaEvent?>(null) }
     fun navigate(destination: String) {
         when (destination) {
             "Today" -> model.enterToday()
             "Calendar" -> if (page == "Calendar") model.cycleCalendarView()
                 else model.enterCalendar()
         }
-        page = destination
+        showPage(destination)
     }
-    fun openCalendars(id: String? = null) { returnPage = page; manageId = id; page = "Calendars" }
-    fun openSetup() { setupRequested = true; page = "Settings" }
+    fun openCalendars(id: String? = null) { manageId = id; showPage("Calendars") }
+    fun openSetup() { setupRequested = true; showPage("Settings") }
     var availableUpdate by remember { mutableStateOf<AvailableUpdate?>(null) }
     var showUpdatePrompt by remember { mutableStateOf(false) }
     var downloadingUpdate by remember { mutableStateOf(false) }
@@ -277,6 +290,7 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START && (page == "Today" || page == "Calendar")) {
                 page = "Calendar"
+                pageHistory.clear()
                 model.openAtToday()
                 scope.launch { calendarScroll.scrollToItem(0) }
             }
@@ -393,6 +407,11 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
     Scaffold(topBar = {
         TopAppBar(title = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (pageHistory.isNotEmpty()) Box(Modifier.size(40.dp)
+                    .clickable(onClickLabel = "Back to previous screen") { goBack() },
+                    contentAlignment = Alignment.Center) {
+                    Text("‹", style = MaterialTheme.typography.headlineMedium)
+                }
                 Box(Modifier.size(48.dp).clickable(onClickLabel = "Go to today") { navigate("Today") },
                     contentAlignment = Alignment.Center) {
                     Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = "Go to today", modifier = Modifier.size(38.dp))
@@ -405,7 +424,7 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
                 }
                 val iconColor = MaterialTheme.colorScheme.onSurface
                 Box(Modifier.size(48.dp).semantics { contentDescription = "Search events" }
-                    .combinedClickable(onClick = { page = "Search" },
+                    .combinedClickable(onClick = { showPage("Search") },
                         onLongClick = { android.widget.Toast.makeText(context, "Search events", android.widget.Toast.LENGTH_SHORT).show() }),
                     contentAlignment = Alignment.Center) {
                     androidx.compose.foundation.Canvas(Modifier.size(24.dp)) {
@@ -447,43 +466,55 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
                                 Text("No calendars found yet", style = MaterialTheme.typography.headlineSmall)
                                 Text("Connect an existing calendar to see events, or create a local calendar on this device.")
                                 Button(onClick = ::openSetup) { Text("+ Add Calendar") }
-                                OutlinedButton(onClick = { photoImportUri = null; page = "Photo Appointments" }) {
+                                OutlinedButton(onClick = { photoImportUri = null; showPage("Photo Appointments") }) {
                                     Text("Import Appointments from Photo")
                                 }
                             } else when (page) {
-                                "Today" -> TodayPage(model, ::openCalendars, ::openSetup) { eventCopy = it; page = "Quick Add" }
-                                "Calendar" -> CalendarPage(model, calendarScroll, ::openCalendars) {
-                                    eventCopy = it; page = "Quick Add"
-                                }
+                                "Today" -> TodayPage(model, ::openCalendars, ::openSetup) { eventCopy = it; showPage("Quick Add") }
+                                "Calendar" -> CalendarPage(model, calendarScroll, ::openCalendars,
+                                    onCopy = { eventCopy = it; showPage("Quick Add") },
+                                    focusEvent = focusExistingEvent,
+                                    onFocusConsumed = { focusExistingEvent = null })
                                 "Quick Add" -> QuickAddPage(model, quickAddSlot, { quickAddSlot = null },
                                     eventCopy, { eventCopy = null }, onScreenshot = {
                                     screenshotPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                    }, onResume = { screenshotUri = null; page = "Screenshot" },
-                                    onPhotoImport = { photoImportUri = null; page = "Photo Appointments" },
-                                    onAddCalendar = ::openSetup)
+                                    }, onResume = { screenshotUri = null; showPage("Screenshot") },
+                                    onPhotoImport = { photoImportUri = null; showPage("Photo Appointments") },
+                                    onAddCalendar = ::openSetup, onOpenExisting = { event ->
+                                        model.calendars.value.firstOrNull { it.id == event.calendarId }?.let { source ->
+                                            if (!model.isCalendarVisible(source)) model.setCalendarVisible(source, true)
+                                        }
+                                        model.selectedDate.value = event.date
+                                        model.calendarAnchor.value = event.date
+                                        model.monthSelectedDate.value = event.date
+                                        focusExistingEvent = event
+                                        navigate("Calendar")
+                                    })
                                 "Find Time" -> FindTimePage(model) { start, end ->
                                     quickAddSlot = start to end
-                                    page = "Quick Add"
+                                    showPage("Quick Add")
                                 }
                                 "Screenshot" -> ScreenshotPage(model, screenshotUri,
-                                    onCancel = { screenshotUri = null; page = "Quick Add" },
-                                    onSaved = { screenshotUri = null; model.activeAgenda.value = "Calendar"; page = "Calendar" })
+                                    onCancel = { screenshotUri = null; goBack() },
+                                    onSaved = { screenshotUri = null; model.activeAgenda.value = "Calendar";
+                                        pageHistory.clear(); page = "Calendar" })
                                 "Photo Appointments" -> PhotoAppointmentPage(model, photoImportUri,
-                                    onCancel = { photoImportUri = null; page = "Calendar" },
-                                    onOpenCalendar = { date -> model.calendarAnchor.value = date; photoImportUri = null; page = "Calendar" })
+                                    onCancel = { photoImportUri = null; goBack() },
+                                    onOpenCalendar = { date -> model.calendarAnchor.value = date; photoImportUri = null;
+                                        pageHistory.clear(); page = "Calendar" })
                                 "Image Action" -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                     Text("Use shared photo", style = MaterialTheme.typography.headlineSmall)
-                                    Button(onClick = { page = "Photo Appointments" }) { Text("Import Appointments from Photo") }
-                                    OutlinedButton(onClick = { screenshotUri = photoImportUri; photoImportUri = null; page = "Screenshot" }) {
+                                    Button(onClick = { showPage("Photo Appointments") }) { Text("Import Appointments from Photo") }
+                                    OutlinedButton(onClick = { screenshotUri = photoImportUri; photoImportUri = null; showPage("Screenshot") }) {
                                         Text("Add one event from screenshot")
                                     }
-                                    TextButton(onClick = { photoImportUri = null; page = "Calendar" }) { Text("Cancel") }
+                                    TextButton(onClick = { photoImportUri = null; goBack() }) { Text("Cancel") }
                                 }
                                 "Tasks" -> TasksPage(model)
-                                "Search" -> SearchPage(model, ::openCalendars) { eventCopy = it; page = "Quick Add" }
-                                "Calendars" -> ManageCalendarsPage(model, { page = returnPage }, ::openSetup, manageId)
+                                "Search" -> SearchPage(model, ::openCalendars) { eventCopy = it; showPage("Quick Add") }
+                                "Calendars" -> ManageCalendarsPage(model, { goBack() }, ::openSetup, manageId)
                                 "About" -> AboutPage()
-                                "More" -> MorePage { page = it }
+                                "More" -> MorePage { showPage(it) }
                                 else -> SettingsPage(model, onConnected = { navigate("Today") },
                                     openSetup = setupRequested, onSetupConsumed = { setupRequested = false }, onUpdateAvailable = {
                                     availableUpdate = it
@@ -771,7 +802,8 @@ private fun TodayPage(model: HamViewModel, openCalendars: (String?) -> Unit, ope
 
 @Composable
 private fun CalendarPage(model: HamViewModel, scroll: androidx.compose.foundation.lazy.LazyListState,
-    openCalendars: (String?) -> Unit, onCopy: (EventCopyRequest) -> Unit) {
+    openCalendars: (String?) -> Unit, onCopy: (EventCopyRequest) -> Unit,
+    focusEvent: AgendaEvent? = null, onFocusConsumed: () -> Unit = {}) {
     val range = model.calendarRange()
     LaunchedEffect(range.start, model.calendarView.value) { scroll.scrollToItem(0) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -786,7 +818,7 @@ private fun CalendarPage(model: HamViewModel, scroll: androidx.compose.foundatio
             contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text("›") }
     }
     AgendaContent(model, range.days, openCalendars, Modifier.fillMaxSize(), model.calendarView.value == CalendarView.MONTH,
-        onCopy, scroll)
+        onCopy, scroll, focusEvent, onFocusConsumed)
 }
 
 @Composable
@@ -806,9 +838,13 @@ private fun RefreshStatus(model: HamViewModel) {
 @Composable
 private fun AgendaContent(model: HamViewModel, days: List<LocalDate>, openCalendars: (String?) -> Unit,
     modifier: Modifier, month: Boolean, onCopy: (EventCopyRequest) -> Unit,
-    scroll: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState()) {
+    scroll: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
+    focusEvent: AgendaEvent? = null, onFocusConsumed: () -> Unit = {}) {
     var selected by remember { mutableStateOf<AgendaEvent?>(null) }
     var selectedGroup by remember { mutableStateOf<List<AgendaEvent>?>(null) }
+    BackHandler(selected != null || selectedGroup != null) {
+        if (selectedGroup != null) selectedGroup = null else selected = null
+    }
     var horizontalDrag by remember { mutableStateOf(0f) }
     val density = LocalDensity.current
     val threshold = with(density) { 64.dp.toPx() }
@@ -817,6 +853,12 @@ private fun AgendaContent(model: HamViewModel, days: List<LocalDate>, openCalend
     val displayKey = "${model.activeAgenda.value}-${model.calendarView.value}-${days.firstOrNull()}"
     val monthSections = if (month) MonthAgenda.sections(days.first(), model.visibleEvents,
         model.monthSelectedDate.value) else emptyList()
+    LaunchedEffect(focusEvent?.identity, model.visibleEvents, model.loading.value) {
+        if (focusEvent != null && !model.loading.value) {
+            val match = model.visibleEvents.firstOrNull { it.identity == focusEvent.identity }
+            if (match != null) { selected = match; onFocusConsumed() }
+        }
+    }
     val expandedMonths = remember(days.firstOrNull(), month) { mutableStateMapOf<java.time.YearMonth, Boolean>() }
     LaunchedEffect(displayKey) {
         val scale = android.provider.Settings.Global.getFloat(context.contentResolver,
@@ -1625,7 +1667,7 @@ private fun AndroidReminderDialog(source: CalendarSource, event: AgendaEvent, cl
 private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String>?,
     onSuggestionApplied: () -> Unit, copyRequest: EventCopyRequest?, onCopyConsumed: () -> Unit,
     onScreenshot: () -> Unit, onResume: () -> Unit, onPhotoImport: () -> Unit,
-    onAddCalendar: () -> Unit) {
+    onAddCalendar: () -> Unit, onOpenExisting: (AgendaEvent) -> Unit) {
     val context = LocalContext.current
     val templateStore = remember(context) { EventTemplateStore(context) }
     val quickDraftStore = remember(context) { QuickAddDraftStore(context) }
@@ -1783,7 +1825,9 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
     var chooser by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
+    var checkingExisting by remember { mutableStateOf(false) }
     var saveFeedback by remember { mutableStateOf("") }
+    var existingEvent by remember { mutableStateOf<AgendaEvent?>(null) }
     var permissionSettingsNeeded by remember { mutableStateOf(false) }
     val androidWritePermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()) { granted ->
@@ -1982,6 +2026,9 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     val normalizedStart = com.tinkercobble.ham.data.EventEntryTime.parse(startTime)?.toString().orEmpty()
     val normalizedEnd = com.tinkercobble.ham.data.EventEntryTime.parse(endTime)?.toString().orEmpty()
+    LaunchedEffect(title, selectedId, model.selectedDate.value, normalizedStart, normalizedEnd) {
+        existingEvent = null
+    }
     val timedValid = allDay || runCatching { com.tinkercobble.ham.data.TimedEventTime.parse(
         model.selectedDate.value, normalizedStart, normalizedEnd) }.isSuccess
     val detailsValid = runCatching { com.tinkercobble.ham.data.EventDraftDetails.of(
@@ -2085,6 +2132,9 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
     if (saveFeedback.isNotBlank()) Text(saveFeedback,
         color = if (saveFeedback.startsWith("Could not")) MaterialTheme.colorScheme.error
             else MaterialTheme.colorScheme.onSurface)
+    existingEvent?.let { event ->
+        Button(onClick = { onOpenExisting(event) }) { Text("Show existing event on its calendar") }
+    }
     if (model.calendars.value.none { it.canCreate }) {
         val androidEditingNeeded = model.androidEnabled.value &&
             model.androidPermissionGranted.value && !model.androidWritePermissionGranted.value
@@ -2113,7 +2163,29 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
             Text(choice.id, style = MaterialTheme.typography.bodySmall)
         }
         OutlinedButton(onClick = { chooser = true }) { Text(if (choice == null) "Choose calendar" else "Change calendar") }
-        Button(onClick = { saveFeedback = ""; confirm = true }, enabled = title.isNotBlank() && timedValid &&
+        if (choice?.provider == CalendarProviderKind.ANDROID && !allDay && title.isNotBlank() && timedValid) {
+            OutlinedButton(onClick = {
+                val id = choice.id
+                val date = model.selectedDate.value
+                val start = normalizedStart
+                val end = normalizedEnd
+                val submittedTitle = title
+                checkingExisting = true
+                scope.launch {
+                    try {
+                        existingEvent = model.findExistingAndroidTimed(id, date, start, end, submittedTitle)
+                        saveFeedback = if (existingEvent != null)
+                            "An event with this title and time is already on the selected calendar. Open it below."
+                        else "No exact event match was found on the selected calendar."
+                    } catch (_: Exception) {
+                        saveFeedback = "Could not check this calendar right now. No event was changed."
+                    } finally { checkingExisting = false }
+                }
+            }, enabled = !checkingExisting && !saving) {
+                Text(if (checkingExisting) "Checking calendar…" else "Check for existing event")
+            }
+        }
+        Button(onClick = { saveFeedback = ""; existingEvent = null; confirm = true }, enabled = title.isNotBlank() && timedValid &&
             repeatValid && detailsValid && allDayRangeValid && multiDaySupported &&
             choice != null && !saving) {
             Text("Review & Save Event")
@@ -2140,19 +2212,40 @@ private fun QuickAddPage(model: HamViewModel, suggestedSlot: Pair<String, String
                 confirmButton = { Button(onClick = {
                     if (saving) return@Button
                     val id = reviewed?.id ?: return@Button
+                    val submittedDate = model.selectedDate.value
+                    val submittedTitle = title
+                    val submittedStart = normalizedStart
+                    val submittedEnd = normalizedEnd
                     saving = true
                     confirm = false
                     saveFeedback = ""
                     val report: (Boolean, Boolean, String) -> Unit = { accepted, confirmed, detail ->
                         saving = false
                         if (accepted) {
+                            existingEvent = null
                             val draftCleared = runCatching { quickDraftStore.clear() }.isSuccess
                             title = ""; description = ""; venue = ""; address = ""
                             lastAllDayDateText = ""
                             saveFeedback = (if (confirmed) "Saved and confirmed on the selected calendar. "
                                 else "Saved on this device; provider confirmation or review is pending. ") +
                                 detail + if (draftCleared) "" else " The draft could not be cleared and may reappear."
-                        } else saveFeedback = "Could not save: $detail. Review the calendar and try again."
+                        } else {
+                            saveFeedback = "Could not save: $detail. Review the calendar and try again."
+                            if (!allDay && repeatSpec == null && reviewed?.provider == CalendarProviderKind.ANDROID &&
+                                (detail.contains("already appears on that calendar") ||
+                                    detail.contains("already exists on that calendar"))) {
+                                scope.launch {
+                                    val match = runCatching {
+                                        model.findExistingAndroidTimed(id, submittedDate,
+                                            submittedStart, submittedEnd, submittedTitle)
+                                    }.getOrNull()
+                                    if (match != null) {
+                                        existingEvent = match
+                                        saveFeedback = "An event with this title and time is already on the selected calendar. No second event was created. Open the existing event below."
+                                    }
+                                }
+                            }
+                        }
                     }
                     if (repeatSpec != null && allDay) model.createRecurringAllDay(id,
                         model.selectedDate.value, title, repeatSpec, description, location, {}, report)
