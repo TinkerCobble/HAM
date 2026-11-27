@@ -12,7 +12,8 @@ enum class CalendarProviderKind { HOME_ASSISTANT, ANDROID, CALDAV, ICS }
 data class CalendarSource(val id: String, val name: String, val features: Int,
     val source: String = "Not provided by Home Assistant", val haColor: String? = null,
     val provider: CalendarProviderKind = CalendarProviderKind.HOME_ASSISTANT,
-    val identityFingerprint: String? = null) {
+    val identityFingerprint: String? = null,
+    val logicalIdentity: String? = null) {
     val canCreate get() = features and 1 != 0
     val canUpdate get() = features and 4 != 0
     val canDelete get() = features and 2 != 0

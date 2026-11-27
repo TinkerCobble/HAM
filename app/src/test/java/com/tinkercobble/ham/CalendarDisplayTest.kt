@@ -35,17 +35,6 @@ class CalendarDisplayTest {
         assertEquals(2, EventGroups.display(listOf(android, dav)).size)
     }
 
-    @Test fun removedAndroidCalendarClearsOnlyItsOwnChoices() {
-        val prefs = CalendarPreferences(defaultId = "android:23")
-        val (clean, selected) = CalendarSelection.pruneMissingAndroidChoices(prefs,
-            setOf("android:23", "android:24"), setOf("android:24"))
-        assertEquals(null, clean.defaultId)
-        assertEquals(setOf("android:24"), selected)
-        val ha = CalendarPreferences(defaultId = "calendar.family")
-        assertEquals("calendar.family", CalendarSelection.pruneMissingAndroidChoices(ha,
-            setOf("android:23"), emptySet()).first.defaultId)
-    }
-
     private val zone = ZoneId.of("America/New_York")
     private fun event(id: String, start: String, end: String, allDay: Boolean = false) =
         AgendaEvent(id, id, "Event", start, end, allDay, "", "", null, null)

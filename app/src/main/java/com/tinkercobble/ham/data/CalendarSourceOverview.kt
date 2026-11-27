@@ -21,4 +21,10 @@ object CalendarSourceOverview {
             .filterKeys { it.isNotBlank() }
             .values.mapNotNull { group -> group.distinctBy { it.id }.takeIf { it.size > 1 } }
             .sortedBy { it.first().name.trim().lowercase(Locale.ROOT) }
+
+    /** Same provider collection metadata is stronger than a name but remains a review hint. */
+    fun possibleLogicalGroups(sources: List<CalendarSource>): List<List<CalendarSource>> =
+        sources.filter { it.logicalIdentity != null }.groupBy { it.logicalIdentity }
+            .values.mapNotNull { group -> group.distinctBy { it.id }.takeIf { it.size > 1 } }
+            .sortedBy { it.first().name.trim().lowercase(Locale.ROOT) }
 }

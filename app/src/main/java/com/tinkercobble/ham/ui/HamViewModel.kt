@@ -40,6 +40,9 @@ import com.tinkercobble.ham.data.CalendarProviderKind
 import com.tinkercobble.ham.data.CalendarSource
 import com.tinkercobble.ham.data.CalendarPreferences
 import com.tinkercobble.ham.data.CalendarPreferenceStore
+import com.tinkercobble.ham.data.PreferenceSyncGlobalSettings
+import com.tinkercobble.ham.data.PreferenceBackgroundSync
+import com.tinkercobble.ham.data.SyncSettingValue
 import com.tinkercobble.ham.data.CalendarReadDiagnosticStore
 import com.tinkercobble.ham.data.AvailabilitySelection
 import com.tinkercobble.ham.data.AvailabilitySelectionStore
@@ -47,6 +50,7 @@ import com.tinkercobble.ham.data.SavedCalendarGroup
 import com.tinkercobble.ham.data.SavedCalendarGroupStore
 import com.tinkercobble.ham.data.SavedGroupMember
 import com.tinkercobble.ham.data.SavedGroupSelection
+import com.tinkercobble.ham.data.SavedGroupSyncProjection
 import com.tinkercobble.ham.data.SavedGroupState
 import com.tinkercobble.ham.data.CalendarPosition
 import com.tinkercobble.ham.data.AgendaCache
@@ -72,6 +76,7 @@ import com.tinkercobble.ham.data.HaTarget
 import com.tinkercobble.ham.data.OfflineMode
 import com.tinkercobble.ham.data.PendingHaMutation
 import com.tinkercobble.ham.data.PendingHaMutations
+import com.tinkercobble.ham.data.PhotoCalendarScan
 import com.tinkercobble.ham.data.TodoEntry
 import com.tinkercobble.ham.data.TimedEventTime
 import kotlinx.coroutines.launch
@@ -110,6 +115,12 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     private val client = HomeAssistantClient(application)
     private val calendarStore = CalendarPreferenceStore(application)
     private val weekStartStore = com.tinkercobble.ham.data.WeekStartPreferenceStore(application)
+    private val preferenceSync = PreferenceSyncGlobalSettings(application)
+    var preferenceSyncBusy = androidx.compose.runtime.mutableStateOf(false)
+        private set
+    var preferenceSyncMessage = androidx.compose.runtime.mutableStateOf("")
+        private set
+    private var preferenceSyncJob: Job? = null
     var offline = androidx.compose.runtime.mutableStateOf(OfflineMode.enabled(application))
         private set
     fun setOffline(enabled: Boolean) {
@@ -124,6 +135,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 refresh()
             } else {
                 message.value = "Online: checking calendars and queued changes"
+                runCatching { PreferenceBackgroundSync.schedule(getApplication(), immediate = true) }
+                syncGlobalSettings()
                 refresh()
                 viewModelScope.launch {
                     refreshJob?.join()
@@ -144,6 +157,172 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     fun setWeekStart(value: com.tinkercobble.ham.data.WeekStart) {
         weekStartStore.save(value)
         weekStart.value = value
+        try {
+            if (preferenceSync.recordWeekStart(value) && !offline.value) syncGlobalSettings()
+        } catch (_: Exception) {
+            preferenceSyncMessage.value = "Saved on this device; sync is waiting for storage repair"
+        }
+    }
+
+    private var preferenceSyncAgain = false
+    private var lastApprovedSyncSources = emptySet<String>()
+    fun syncGlobalSettings() {
+        if (offline.value) return
+        if (preferenceSyncJob?.isActive == true) {
+            preferenceSyncAgain = true
+            return
+        }
+        val paired = runCatching { preferenceSync.paired() }.getOrElse {
+            preferenceSyncMessage.value = "Protected sync connection could not be read"
+            return
+        }
+        if (!paired) return
+        val startingWeek = weekStart.value
+        val startingView = calendarPreferences.value.view
+        val sources = calendars.value.toList()
+        val mappings = runCatching { preferenceSync.approved(sources) }.getOrElse {
+            preferenceSyncMessage.value = "Calendar sync approvals could not be read"
+            return
+        }
+        val startingPrefs = calendarPreferences.value
+        val startingGroups = savedGroups.value
+        val localChoices = mappings.map { (identity, source) ->
+            PreferenceSyncGlobalSettings.CalendarLocal(identity, isCalendarVisible(source),
+                source.id in startingPrefs.favorites, startingPrefs.colors[source.id],
+                source.id in startingPrefs.mirrorHidden, startingPrefs.order[source.id],
+                startingGroups.groups.filter { group -> group.members.any { it.sourceId == source.id } }
+                    .map { it.id }.sorted())
+        }
+        val startingDefault = startingPrefs.defaultId
+        val defaultIdentity = mappings.entries.firstOrNull { (_, source) ->
+            source.id == startingDefault && source.canCreate }?.key
+        preferenceSyncBusy.value = true
+        preferenceSyncJob = viewModelScope.launch {
+            try {
+                val applied = withContext(Dispatchers.IO) {
+                    preferenceSync.exchange(startingWeek, startingView, localChoices, defaultIdentity,
+                        localGroups = startingGroups.takeUnless { savedGroupStorageError.value })
+                }
+                // Never overwrite a newer local edit made while the request was in flight.
+                if (weekStart.value == startingWeek && applied.weekStart != null &&
+                    applied.weekStart != weekStart.value) {
+                    weekStartStore.save(applied.weekStart)
+                    weekStart.value = applied.weekStart
+                }
+                if (calendarPreferences.value.view == startingView && applied.view != null &&
+                    applied.view != startingView) {
+                    val next = calendarPreferences.value.copy(view = applied.view)
+                    calendarStore.save(preferenceScope(), next, durable = true)
+                    calendarPreferences.value = next
+                    calendarView.value = applied.view
+                }
+                var nextPrefs = calendarPreferences.value
+                var nextAndroid = androidVisibleIds.value
+                var nextDav = davVisibleIds.value
+                var nextIcs = icsVisibleIds.value
+                var changed = 0
+                for (local in localChoices) {
+                    val source = mappings[local.identity] ?: continue
+                    val remote = applied.calendars[local.identity] ?: continue
+                    if (remote.visible != null && isCalendarVisible(source) == local.visible &&
+                        remote.visible != local.visible) {
+                        val id = source.id
+                        when (source.provider) {
+                            CalendarProviderKind.ANDROID -> nextAndroid = if (remote.visible)
+                                nextAndroid + id else nextAndroid - id
+                            CalendarProviderKind.CALDAV -> nextDav = if (remote.visible)
+                                nextDav + id else nextDav - id
+                            CalendarProviderKind.ICS -> nextIcs = if (remote.visible)
+                                nextIcs + id else nextIcs - id
+                            CalendarProviderKind.HOME_ASSISTANT -> nextPrefs = nextPrefs.copy(
+                                hidden = if (remote.visible) nextPrefs.hidden - id else nextPrefs.hidden + id)
+                        }
+                        changed++
+                    }
+                    if (remote.favorite != null &&
+                        (source.id in calendarPreferences.value.favorites) == local.favorite &&
+                        remote.favorite != local.favorite) {
+                        nextPrefs = nextPrefs.copy(favorites = if (remote.favorite)
+                            nextPrefs.favorites + source.id else nextPrefs.favorites - source.id)
+                        changed++
+                    }
+                    if (remote.colorKnown && calendarPreferences.value.colors[source.id] == local.color &&
+                        remote.color != local.color) {
+                        nextPrefs = nextPrefs.setColor(source.id, remote.color)
+                        changed++
+                    }
+                    if (remote.mirrorHidden != null &&
+                        (source.id in calendarPreferences.value.mirrorHidden) == local.mirrorHidden &&
+                        remote.mirrorHidden != local.mirrorHidden) {
+                        nextPrefs = nextPrefs.copy(mirrorHidden = if (remote.mirrorHidden)
+                            nextPrefs.mirrorHidden + source.id else nextPrefs.mirrorHidden - source.id)
+                        changed++
+                    }
+                    if (remote.orderKnown && calendarPreferences.value.order[source.id] == local.order &&
+                        remote.order != local.order) {
+                        nextPrefs = nextPrefs.copy(order = if (remote.order == null)
+                            nextPrefs.order - source.id else nextPrefs.order + (source.id to remote.order))
+                        changed++
+                    }
+                }
+                if (applied.defaultKnown && calendarPreferences.value.defaultId == startingDefault) {
+                    val target = applied.defaultIdentity?.let { mappings[it] }
+                    if (applied.defaultIdentity == null || target?.canCreate == true) {
+                        val id = target?.id
+                        if (id != nextPrefs.defaultId) {
+                            nextPrefs = nextPrefs.copy(defaultId = id)
+                            changed++
+                        }
+                    }
+                }
+                if (nextPrefs != calendarPreferences.value) {
+                    calendarStore.save(preferenceScope(), nextPrefs, durable = true)
+                    calendarPreferences.value = nextPrefs
+                    calendarView.value = nextPrefs.view
+                }
+                if (nextAndroid != androidVisibleIds.value) {
+                    check(androidPrefs.edit().putStringSet("visible", nextAndroid).commit())
+                    androidVisibleIds.value = nextAndroid
+                }
+                if (nextDav != davVisibleIds.value) {
+                    check(davPrefs.edit().putStringSet("visible", nextDav).commit())
+                    davVisibleIds.value = nextDav
+                }
+                if (nextIcs != icsVisibleIds.value) {
+                    check(icsPrefs.edit().putStringSet("visible", nextIcs).commit())
+                    icsVisibleIds.value = nextIcs
+                }
+                var groupSyncBlocked = false
+                if (!savedGroupStorageError.value && savedGroups.value == startingGroups &&
+                    applied.groupOrder != null) {
+                    val memberships = mappings.map { (identity, source) ->
+                        source to applied.calendars[identity]?.groups
+                    }.toMap()
+                    val projected = SavedGroupSyncProjection.apply(startingGroups,
+                        applied.groupOrder, applied.groupNames, applied.activeGroupKnown,
+                        applied.activeGroupId, memberships, applied.deletedGroupIds)
+                    if (projected == null) groupSyncBlocked = true
+                    else if (projected != startingGroups) {
+                        if (saveGroupState(projected)) changed++ else groupSyncBlocked = true
+                    }
+                }
+                if (changed > 0) { updateWidget(); refresh() }
+                preferenceSyncMessage.value = if (applied.conflicts > 0)
+                    "Display settings need conflict review"
+                else if (groupSyncBlocked) "Shared groups need review; local groups were kept"
+                else if (changed > 0) "Applied $changed shared calendar choices"
+                else "Paired display settings are up to date"
+            } catch (_: Exception) {
+                preferenceSyncMessage.value = "Display settings are saved locally; sync will retry"
+            } finally {
+                preferenceSyncBusy.value = false
+                preferenceSyncJob = null
+                if (preferenceSyncAgain) {
+                    preferenceSyncAgain = false
+                    syncGlobalSettings()
+                }
+            }
+        }
     }
     private val preserveLegacyHaSession = calendarStore.prepareHomeAssistantSelectionMigration(client.connected)
     private val agendaCache = AgendaCache(application)
@@ -180,7 +359,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     private var lastDavAttemptElapsed = 0L
     private var pendingDavDrafts = androidx.compose.runtime.mutableStateOf<List<PendingDavAgenda.Draft>>(emptyList())
     private suspend fun reloadPendingDav(range: DateRange = if (activeAgenda.value == "Calendar")
-        calendarRange() else DateRange(selectedDate.value, selectedDate.value.plusDays(1))) {
+        calendarDataRange() else DateRange(selectedDate.value, selectedDate.value.plusDays(1))) {
         val sources = calendars.value
         val (summaries, drafts) = withContext(Dispatchers.IO) {
             val changes = pendingDav.list()
@@ -771,9 +950,19 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         true
         } catch (_: Exception) { savedGroupStorageError.value = true; false }
     }
+    private fun queueGroupChanges(old: SavedGroupState, next: SavedGroupState) {
+        try {
+            if (preferenceSync.recordGroups(old, next, calendars.value) && !offline.value)
+                syncGlobalSettings()
+        } catch (_: Exception) {
+            preferenceSyncMessage.value = "Groups saved on this device; sync is waiting for storage repair"
+        }
+    }
     fun setActiveSavedGroup(id: String?) {
         if (id != null && savedGroups.value.groups.none { it.id == id }) return
-        if (saveGroupState(savedGroups.value.copy(activeId = id))) refresh()
+        val old = savedGroups.value
+        val next = old.copy(activeId = id)
+        if (saveGroupState(next)) { queueGroupChanges(old, next); refresh() }
     }
     fun saveSavedGroup(name: String, ids: Set<String>, existingId: String? = null): Boolean {
         val sources = calendars.value.filter { it.id in ids }
@@ -785,6 +974,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         val next = savedGroups.value.copy(groups = if (existingId == null) old + candidate else
             old.map { if (it.id == existingId) candidate else it })
         if (!saveGroupState(next)) return false
+        queueGroupChanges(savedGroups.value.copy(groups = old), next)
         if (next.activeId == candidate.id) refresh()
         return true
     }
@@ -792,8 +982,22 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         if (savedGroups.value.groups.none { it.id == id }) return false
         val next = savedGroups.value.copy(groups = savedGroups.value.groups.filterNot { it.id == id },
             activeId = savedGroups.value.activeId.takeUnless { it == id })
+        val old = savedGroups.value
         if (!saveGroupState(next)) return false
+        queueGroupChanges(old, next)
         refresh()
+        return true
+    }
+    fun moveSavedGroup(id: String, direction: Int): Boolean {
+        if (direction !in setOf(-1, 1)) return false
+        val old = savedGroups.value
+        val index = old.groups.indexOfFirst { it.id == id }
+        if (index < 0 || index + direction !in old.groups.indices) return false
+        val ordered = old.groups.toMutableList()
+        java.util.Collections.swap(ordered, index, index + direction)
+        val next = old.copy(groups = ordered)
+        if (!saveGroupState(next)) return false
+        queueGroupChanges(old, next)
         return true
     }
     private fun loadAvailabilityScope() {
@@ -816,8 +1020,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     var dayBrowsing = androidx.compose.runtime.mutableStateOf(initialPosition.selected != LocalDate.now())
     var calendarAnchor = androidx.compose.runtime.mutableStateOf(initialPosition.anchor)
     var monthSelectedDate = androidx.compose.runtime.mutableStateOf(initialPosition.monthDay)
-    var calendarView = androidx.compose.runtime.mutableStateOf(calendarStore.load(preferenceScope()).view)
-    var activeAgenda = androidx.compose.runtime.mutableStateOf(initialPosition.agenda)
+    var calendarView = androidx.compose.runtime.mutableStateOf(calendarStore.load(preferenceScope()).defaultView)
+    var activeAgenda = androidx.compose.runtime.mutableStateOf("Calendar")
     var navigationDirection = androidx.compose.runtime.mutableIntStateOf(0)
     var failedCalendars = androidx.compose.runtime.mutableStateOf<Map<String, String>>(emptyMap())
     /** Session-only aggregate causes, with no event text, resource URL or server response. */
@@ -879,13 +1083,142 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 androidEnabled.value && androidPermissionGranted.value)
         }
     }
+    /** A bounded, fresh duplicate read across every connected calendar, including hidden sources. */
+    suspend fun scanPhotoAppointments(dates: List<LocalDate>): PhotoCalendarScan {
+        require(dates.isNotEmpty() && dates.size <= 100) { "Review the detected dates first" }
+        val range = DateRange(dates.min().minusDays(1), dates.max().plusDays(2))
+        require(java.time.temporal.ChronoUnit.DAYS.between(range.start, range.endExclusive) <= 370) {
+            "Import a smaller date range at one time"
+        }
+        val sources = calendars.value.toList()
+        val found = mutableListOf<AgendaEvent>()
+        val unchecked = mutableSetOf<String>()
+        if (sources.isEmpty()) unchecked += "No connected calendars"
+        val android = sources.filter { it.provider == CalendarProviderKind.ANDROID }
+        if (android.isNotEmpty()) {
+            if (!androidEnabled.value || !androidProvider.canRead()) unchecked += android.map { it.name }
+            else try { found += withContext(Dispatchers.IO) { androidProvider.events(android, range) } }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { unchecked += android.map { it.name } }
+        }
+        val ha = sources.filter { it.provider == CalendarProviderKind.HOME_ASSISTANT }
+        if (ha.isNotEmpty()) {
+            if (offline.value || !client.connected) unchecked += ha.map { it.name }
+            else try {
+                val read = client.readEvents(ha, range.start, range.endExclusive)
+                found += read.events
+                unchecked += ha.filter { it.id in read.failed || it.id !in read.succeeded }.map { it.name }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { unchecked += ha.map { it.name } }
+        }
+        val dav = sources.filter { it.provider == CalendarProviderKind.CALDAV }
+        if (offline.value) unchecked += dav.map { it.name }
+        else for (account in withContext(Dispatchers.IO) { davStore.accounts() }) {
+            val matching = dav.filter { it.id.startsWith("dav:${account.id}:") }
+            if (matching.isEmpty()) continue
+            try {
+                val collections = withContext(Dispatchers.IO) { DavConnection.listAccount(account) }
+                for (collection in collections) {
+                    val source = DavConnection.source(account, collection)
+                    if (matching.none { it.id == source.id }) continue
+                    try {
+                        val read = withContext(Dispatchers.IO) { DavConnection.readEvents(account, collection, source, range) }
+                        found += read.events
+                        if (read.partial) unchecked += source.name
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { unchecked += source.name }
+                }
+                unchecked += matching.filter { source -> collections.none {
+                    DavConnection.source(account, it).id == source.id } }.map { it.name }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { unchecked += matching.map { it.name } }
+        }
+        val ics = sources.filter { it.provider == CalendarProviderKind.ICS }
+        if (offline.value) unchecked += ics.map { it.name }
+        else for (subscription in withContext(Dispatchers.IO) { icsStore.all() }) {
+            val source = IcsConnection.source(subscription)
+            if (ics.none { it.id == source.id }) continue
+            try {
+                val read = withContext(Dispatchers.IO) { IcsConnection.fetch(subscription, range) }
+                found += read.events
+                if (read.unsupportedRecurring > 0) unchecked += source.name
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { unchecked += source.name }
+        }
+        val cached = events.value.filter { it.occursIn(range) }
+        if (offline.value) found += cached
+        val pendingHaEvents = haPending.value.filter { it.operation == HaOperation.CREATE }.map { pending ->
+            val source = sources.firstOrNull { it.id == pending.calendarId }
+            AgendaEvent(pending.calendarId, source?.name ?: "Home Assistant", pending.title,
+                pending.originalStart, pending.originalEnd, false, pending.originalDescription,
+                pending.originalLocation, null, null, CalendarProviderKind.HOME_ASSISTANT)
+        }
+        val pendingDavEvents = PendingDavAgenda.merge(emptyList(), pendingDavDrafts.value)
+            .filter { it.occursIn(range) }
+        return PhotoCalendarScan(found.distinctBy { it.identity }, unchecked,
+            (pendingHaEvents + pendingDavEvents).distinctBy { it.identity })
+    }
     private fun savePosition() = calendarStore.savePosition(preferenceScope(),
         CalendarPosition(selectedDate.value, calendarAnchor.value, monthSelectedDate.value, activeAgenda.value))
     fun setCalendarPreferences(value: CalendarPreferences) {
+        val old = calendarPreferences.value
+        val previousView = calendarPreferences.value.view
+        try { calendarStore.save(preferenceScope(), value, durable = true) }
+        catch (_: Exception) {
+            message.value = "Could not save calendar settings on this device"
+            return
+        }
         calendarPreferences.value = value
         calendarView.value = value.view
-        calendarStore.save(preferenceScope(), value)
         updateWidget()
+        try {
+            var queued = false
+            if (value.view != previousView) queued = preferenceSync.recordView(value.view) || queued
+            val sources = calendars.value.toList()
+            for (source in sources) {
+                val id = source.id
+                if ((id in old.favorites) != (id in value.favorites))
+                    queued = preferenceSync.recordCalendar(source, sources, "favorite",
+                        SyncSettingValue.Flag(id in value.favorites)) || queued
+                if (old.colors[id] != value.colors[id])
+                    queued = preferenceSync.recordCalendar(source, sources, "color",
+                        value.colors[id]?.let(SyncSettingValue::Text) ?: SyncSettingValue.Deleted) || queued
+                if ((id in old.mirrorHidden) != (id in value.mirrorHidden))
+                    queued = preferenceSync.recordCalendar(source, sources, "mirror_hidden",
+                        SyncSettingValue.Flag(id in value.mirrorHidden)) || queued
+                if (old.order[id] != value.order[id])
+                    queued = preferenceSync.recordCalendar(source, sources, "order",
+                        value.order[id]?.let(SyncSettingValue::Number) ?: SyncSettingValue.Deleted) || queued
+                if (source.provider == CalendarProviderKind.HOME_ASSISTANT &&
+                    (id in old.hidden) != (id in value.hidden))
+                    queued = preferenceSync.recordCalendar(source, sources, "visible",
+                        SyncSettingValue.Flag(id !in value.hidden)) || queued
+            }
+            if (old.defaultId != value.defaultId) {
+                val source = value.defaultId?.let { id -> sources.singleOrNull { it.id == id } }
+                if (value.defaultId == null || source != null)
+                    queued = preferenceSync.recordQuickAddDefault(source, sources) || queued
+            }
+            if (queued && !offline.value) syncGlobalSettings()
+        } catch (_: Exception) {
+            preferenceSyncMessage.value = "Saved on this device; sync is waiting for storage repair"
+        }
+    }
+    /** Reorder within the source's management section; only HAM's presentation changes. */
+    fun moveCalendarOrder(sourceId: String, direction: Int) {
+        if (direction !in setOf(-1, 1)) return
+        val prefs = calendarPreferences.value
+        val source = calendars.value.singleOrNull { it.id == sourceId } ?: return
+        val section = CalendarSelection.managementSection(source, prefs, isCalendarVisible(source))
+        val ordered = calendars.value.filter {
+            CalendarSelection.managementSection(it, prefs, isCalendarVisible(it)) == section
+        }.sortedWith(compareBy<CalendarSource> { prefs.order[it.id] ?: Int.MAX_VALUE }
+            .thenBy { it.name.lowercase() }.thenBy { it.id }).toMutableList()
+        val index = ordered.indexOfFirst { it.id == sourceId }
+        if (index < 0 || index + direction !in ordered.indices) return
+        java.util.Collections.swap(ordered, index, index + direction)
+        setCalendarPreferences(prefs.copy(order = prefs.order +
+            ordered.mapIndexed { position, item -> item.id to position }.toMap()))
     }
     fun enableAndroidCalendars() {
         androidPermissionGranted.value = androidProvider.canRead()
@@ -937,17 +1270,22 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         CalendarProviderKind.HOME_ASSISTANT -> source.id !in calendarPreferences.value.hidden
     }
     fun setCalendarVisible(source: CalendarSource, visible: Boolean) {
-        if (!visible && calendarPreferences.value.defaultId == source.id)
-            setCalendarPreferences(calendarPreferences.value.copy(defaultId = null))
+        // Visibility is only a display choice. Keep the user's intended Quick Add
+        // destination so a temporarily hidden or unavailable source never silently
+        // changes where future events will be saved.
         if (source.provider == CalendarProviderKind.ANDROID) {
             val next = if (visible) androidVisibleIds.value + source.id else androidVisibleIds.value - source.id
+            if (!androidPrefs.edit().putStringSet("visible", next).commit()) {
+                message.value = "Could not save calendar visibility"; return
+            }
             androidVisibleIds.value = next
-            androidPrefs.edit().putStringSet("visible", next).apply()
             refresh()
         } else if (source.provider == CalendarProviderKind.CALDAV) {
             val next = if (visible) davVisibleIds.value + source.id else davVisibleIds.value - source.id
+            if (!davPrefs.edit().putStringSet("visible", next).commit()) {
+                message.value = "Could not save calendar visibility"; return
+            }
             davVisibleIds.value = next
-            davPrefs.edit().putStringSet("visible", next).apply()
             if (!visible) viewModelScope.launch(Dispatchers.IO) {
                 try { davResources.removeCalendar(source.id.substringAfter("dav:").substringBefore(":"), source.id) }
                 catch (_: Exception) { davResources.clear() }
@@ -955,32 +1293,58 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             refresh()
         } else if (source.provider == CalendarProviderKind.ICS) {
             val next = if (visible) icsVisibleIds.value + source.id else icsVisibleIds.value - source.id
+            if (!icsPrefs.edit().putStringSet("visible", next).commit()) {
+                message.value = "Could not save calendar visibility"; return
+            }
             icsVisibleIds.value = next
-            icsPrefs.edit().putStringSet("visible", next).apply()
             refresh()
         } else setCalendarPreferences(calendarPreferences.value.copy(hidden = if (visible)
             calendarPreferences.value.hidden - source.id else calendarPreferences.value.hidden + source.id))
         updateWidget()
+        if (source.provider != CalendarProviderKind.HOME_ASSISTANT) try {
+            if (preferenceSync.recordCalendar(source, calendars.value, "visible",
+                    SyncSettingValue.Flag(visible)) && !offline.value) syncGlobalSettings()
+        } catch (_: Exception) {
+            preferenceSyncMessage.value = "Saved on this device; sync is waiting for storage repair"
+        }
     }
     fun setAllCalendarsVisible(visible: Boolean) {
+        val before = calendars.value.associate { it.id to isCalendarVisible(it) }
         val androidIds = calendars.value.filter { it.provider == CalendarProviderKind.ANDROID }.map { it.id }.toSet()
         val next = if (visible) androidVisibleIds.value + androidIds else androidVisibleIds.value - androidIds
+        if (!androidPrefs.edit().putStringSet("visible", next).commit()) {
+            message.value = "Could not save calendar visibility"; return
+        }
         androidVisibleIds.value = next
-        androidPrefs.edit().putStringSet("visible", next).apply()
         val davIds = calendars.value.filter { it.provider == CalendarProviderKind.CALDAV }.map { it.id }.toSet()
         val nextDav = if (visible) davVisibleIds.value + davIds else davVisibleIds.value - davIds
+        if (!davPrefs.edit().putStringSet("visible", nextDav).commit()) {
+            message.value = "Some calendar visibility changes could not be saved; reopen Manage calendars to review"; return
+        }
         davVisibleIds.value = nextDav
-        davPrefs.edit().putStringSet("visible", nextDav).apply()
         val icsIds = calendars.value.filter { it.provider == CalendarProviderKind.ICS }.map { it.id }.toSet()
         val nextIcs = if (visible) icsVisibleIds.value + icsIds else icsVisibleIds.value - icsIds
+        if (!icsPrefs.edit().putStringSet("visible", nextIcs).commit()) {
+            message.value = "Some calendar visibility changes could not be saved; reopen Manage calendars to review"; return
+        }
         icsVisibleIds.value = nextIcs
-        icsPrefs.edit().putStringSet("visible", nextIcs).apply()
         if (!visible) viewModelScope.launch(Dispatchers.IO) { runCatching { davResources.clear() } }
         val ha = calendars.value.filter { it.provider == CalendarProviderKind.HOME_ASSISTANT }
         setCalendarPreferences(if (visible) calendarPreferences.value.showAll(ha)
-            else calendarPreferences.value.hideAll(ha).copy(defaultId = null))
+            else calendarPreferences.value.hideAll(ha))
         updateWidget()
         refresh()
+        try {
+            var queued = false
+            val sources = calendars.value.toList()
+            for (source in sources) if (source.provider != CalendarProviderKind.HOME_ASSISTANT &&
+                before[source.id] != visible)
+                queued = preferenceSync.recordCalendar(source, sources, "visible",
+                    SyncSettingValue.Flag(visible)) || queued
+            if (queued && !offline.value) syncGlobalSettings()
+        } catch (_: Exception) {
+            preferenceSyncMessage.value = "Saved on this device; sync is waiting for storage repair"
+        }
     }
     /** Called only after an explicit tap in Settings; the old installation remains intact. */
     fun importLegacySettings(): Boolean {
@@ -999,6 +1363,12 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         savePosition()
         refresh()
     }
+    fun cycleCalendarView() {
+        setView(calendarView.value.next())
+    }
+    fun setDefaultCalendarView(value: CalendarView) {
+        setCalendarPreferences(calendarPreferences.value.copy(defaultView = value, view = calendarView.value))
+    }
     fun updateActualToday() {
         val current = LocalDate.now()
         val previous = actualToday.value
@@ -1014,6 +1384,10 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
     fun enterCalendar() {
         navigationDirection.intValue = 0
         activeAgenda.value = "Calendar"
+        val default = calendarPreferences.value.defaultView
+        if (calendarPreferences.value.view != default)
+            setCalendarPreferences(calendarPreferences.value.copy(view = default))
+        else calendarView.value = default
         savePosition()
         refresh()
     }
@@ -1022,6 +1396,8 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         today()
     }
     fun calendarRange() = calendarView.value.range(calendarAnchor.value)
+    fun calendarDataRange(): DateRange = if (calendarView.value == CalendarView.MONTH)
+        com.tinkercobble.ham.data.MonthAgenda.range(calendarAnchor.value) else calendarRange()
     fun moveCalendar(direction: Long) {
         navigationDirection.intValue = direction.toInt()
         calendarAnchor.value = calendarView.value.move(calendarAnchor.value, direction)
@@ -1069,12 +1445,21 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         }
     } }
     fun refreshIfStaleOnResume() {
-        if (!initialCacheRestored || !hasAgendaSource || refreshJob?.isActive == true) return
+        val canReadNow = androidProvider.canRead()
+        val canWriteNow = androidProvider.canWrite()
+        val permissionsChanged = canReadNow != androidPermissionGranted.value ||
+            canWriteNow != androidWritePermissionGranted.value
+        androidPermissionGranted.value = canReadNow
+        androidWritePermissionGranted.value = canWriteNow
+        if (!initialCacheRestored || !hasAgendaSource ||
+            (refreshJob?.isActive == true && !permissionsChanged)) return
         val last = lastSync.value
-        if (last == null || last.isBefore(Instant.now().minusSeconds(5 * 60))) refresh()
+        if (permissionsChanged || last == null ||
+            last.isBefore(Instant.now().minusSeconds(5 * 60))) refresh()
     }
     fun refresh() {
         androidPermissionGranted.value = androidProvider.canRead()
+        androidWritePermissionGranted.value = androidProvider.canWrite()
         if (androidEnabled.value && !androidPermissionGranted.value) {
             hamLocalCalendarId.value = null
             calendars.value = calendars.value.filter { it.provider != CalendarProviderKind.ANDROID }
@@ -1083,7 +1468,7 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         if (!hasAgendaSource) return
         refreshJob?.cancel()
         val serial = refreshGeneration.next()
-        val range = if (activeAgenda.value == "Calendar") calendarRange()
+        val range = if (activeAgenda.value == "Calendar") calendarDataRange()
             else DateRange(selectedDate.value, selectedDate.value.plusDays(1))
         refreshJob = viewModelScope.launch { refreshMutex.withLock {
         if (!refreshGeneration.accepts(serial)) return@withLock
@@ -1318,14 +1703,11 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             calendars.value = sources
-            if (androidDiscoverySucceeded) {
-                val (cleanPrefs, selected) = CalendarSelection.pruneMissingAndroidChoices(
-                    calendarPreferences.value, androidVisibleIds.value, androidSources.map { it.id }.toSet())
-                if (selected != androidVisibleIds.value) {
-                    androidVisibleIds.value = selected
-                    androidPrefs.edit().putStringSet("visible", selected).apply()
-                }
-                if (cleanPrefs != calendarPreferences.value) setCalendarPreferences(cleanPrefs)
+            val approvedSyncSources = runCatching { preferenceSync.approved(sources).keys }
+                .getOrDefault(emptySet())
+            if (approvedSyncSources != lastApprovedSyncSources) {
+                lastApprovedSyncSources = approvedSyncSources
+                syncGlobalSettings()
             }
             var priorEvents = events.value
             if (haDiscoverySucceeded) priorEvents = pruneRemovedCalendars(priorEvents,
@@ -1400,7 +1782,32 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         } }
     }
     fun move(days: Long) { navigationDirection.intValue = days.toInt(); selectedDate.value = selectedDate.value.plusDays(days); dayBrowsing.value = true; savePosition(); refresh() }
-    fun today() { navigationDirection.intValue = 0; selectedDate.value = LocalDate.now(); dayBrowsing.value = false; savePosition(); refresh() }
+    fun today() {
+        navigationDirection.intValue = 0
+        val current = LocalDate.now()
+        selectedDate.value = current
+        calendarAnchor.value = current
+        monthSelectedDate.value = current
+        dayBrowsing.value = false
+        savePosition()
+        refresh()
+    }
+    fun openAtToday() {
+        val current = LocalDate.now()
+        val changed = selectedDate.value != current || calendarAnchor.value != current ||
+            monthSelectedDate.value != current || activeAgenda.value != "Today" || dayBrowsing.value
+        selectedDate.value = current
+        calendarAnchor.value = current
+        monthSelectedDate.value = current
+        activeAgenda.value = "Calendar"
+        val default = calendarPreferences.value.defaultView
+        if (calendarPreferences.value.view != default)
+            setCalendarPreferences(calendarPreferences.value.copy(view = default))
+        else calendarView.value = default
+        dayBrowsing.value = false
+        navigationDirection.intValue = 0
+        if (changed) { savePosition(); refresh() }
+    }
     fun beginAuth(address: String) = viewModelScope.launch {
         if (offline.value) { message.value = "Turn off Offline to sign in"; return@launch }
         loading.value = true
@@ -1662,6 +2069,20 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
             onResult(false, false, message.value)
         }
         finally { loading.value = false }
+    }
+    /** Fresh, read-only lookup after a duplicate rejection; never retries the write. */
+    suspend fun findExistingAndroidTimed(calendarId: String, date: LocalDate,
+        startText: String, endText: String, title: String): AgendaEvent? {
+        val source = calendars.value.singleOrNull {
+            it.id == calendarId && it.provider == CalendarProviderKind.ANDROID
+        } ?: return null
+        val time = com.tinkercobble.ham.data.TimedEventTime.parse(date, startText, endText)
+        return withContext(Dispatchers.IO) {
+            androidProvider.events(listOf(source), DateRange(date, date.plusDays(1)))
+                .firstOrNull { event -> !event.allDay && event.summary.equals(title.trim(), true) &&
+                    AgendaEvent.instant(event.start) == time.start.toInstant() &&
+                    AgendaEvent.instant(event.end) == time.end.toInstant() }
+        }
     }
     fun moveAndroidEvent(event: AgendaEvent, destinationId: String, draft: IcsImportDraft,
         done: () -> Unit) = viewModelScope.launch {
@@ -2013,7 +2434,11 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         loading.value = true
         try {
             withContext(Dispatchers.IO) { androidProvider.deleteEvent(source, event) }
-            message.value = "Event removed"
+            val remindersCleared = withContext(Dispatchers.IO) { runCatching {
+                com.tinkercobble.ham.LocalReminderAlarms(getApplication())
+                    .removeConfirmedEvent(event) }.isSuccess }
+            message.value = if (remindersCleared) "Event removed"
+                else "Event removed; check Pinned Reminders for a remaining local alert"
             done()
             refresh()
         } catch (e: Exception) { message.value = e.message ?: "Event was not removed" }
@@ -2035,7 +2460,11 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         loading.value = true
         try {
             withContext(Dispatchers.IO) { androidProvider.deleteSeries(source, event) }
-            message.value = "Entire series removed"
+            val remindersCleared = withContext(Dispatchers.IO) { runCatching {
+                com.tinkercobble.ham.LocalReminderAlarms(getApplication())
+                    .removeConfirmedEvent(event, wholeSeries = true) }.isSuccess }
+            message.value = if (remindersCleared) "Entire series removed"
+                else "Series removed; check Pinned Reminders for a remaining local alert"
             done()
             refresh()
         } catch (e: Exception) { message.value = e.message ?: "Series was not removed" }

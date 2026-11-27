@@ -16,6 +16,7 @@ import com.tinkercobble.ham.data.LocalReminderRecord
 import com.tinkercobble.ham.data.LocalReminderPlanner
 import com.tinkercobble.ham.data.LocalReminderStore
 import com.tinkercobble.ham.data.LocalReminderWhen
+import com.tinkercobble.ham.data.PinnedReminderText
 import com.tinkercobble.ham.data.AgendaEvent
 import com.tinkercobble.ham.data.CalendarSource
 import com.tinkercobble.ham.data.DateRange
@@ -51,6 +52,38 @@ class LocalReminderAlarms(private val context: Context) {
 
     fun cancel(record: LocalReminderRecord) { alarms.cancel(pending(record)) }
 
+    fun done(id: String) {
+        val store = LocalReminderStore(context)
+        val record = store.list().firstOrNull { it.id == id } ?: return
+        store.remove(id)
+        cancel(record)
+        context.getSystemService(NotificationManager::class.java).cancel(id.hashCode())
+    }
+
+    /** Remove only after HAM itself has confirmed a provider deletion. */
+    fun removeConfirmedEvent(event: AgendaEvent, wholeSeries: Boolean = false) {
+        val store = LocalReminderStore(context)
+        val eventKey = LocalReminderPlanner.plan(event, LocalReminderWhen.MORNING_OF).eventKey
+        store.list().filter { record ->
+            record.eventKey == eventKey || (wholeSeries && event.uid != null &&
+                record.details?.provider == event.provider &&
+                record.details.calendarId == event.calendarId && record.details.uid == event.uid)
+        }.forEach { done(it.id) }
+    }
+
+    private fun cancelNotification(record: LocalReminderRecord) {
+        if (record.keepUntilDone)
+            context.getSystemService(NotificationManager::class.java).cancel(record.id.hashCode())
+    }
+
+    /** Refresh only a still-visible card. Opening, swiping or rebooting cannot repost it. */
+    private fun updateVisiblePin(record: LocalReminderRecord) {
+        if (!record.keepUntilDone || !record.delivered || !notificationAllowed()) return
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (manager.activeNotifications.any { it.id == record.id.hashCode() })
+            LocalReminderReceiver.post(context, record)
+    }
+
     fun reschedule() {
         if (!notificationAllowed()) return
         val store = LocalReminderStore(context)
@@ -59,8 +92,9 @@ class LocalReminderAlarms(private val context: Context) {
         store.list().forEach { record ->
             when {
                 !record.active -> Unit
+                record.keepUntilDone && record.delivered -> Unit
                 record.triggerAt.isAfter(now) -> runCatching { schedule(record) }
-                now.isBefore(record.triggerAt.plusSeconds(24 * 60 * 60)) ->
+                (record.keepUntilDone || now.isBefore(record.triggerAt.plusSeconds(24 * 60 * 60))) ->
                     runCatching { LocalReminderReceiver().onReceive(context,
                         Intent(context, LocalReminderReceiver::class.java)
                             .setAction(ACTION_NOTIFY).putExtra(EXTRA_ID, record.id)) }
@@ -82,8 +116,13 @@ class LocalReminderAlarms(private val context: Context) {
             if (eventKey !in keys) return@forEach
             store.refreshEvent(event).forEach { (old, updated) ->
                 cancel(old)
-                if (updated.triggerAt.isAfter(Instant.now())) {
+                if (updated.keepUntilDone && updated.delivered) updateVisiblePin(updated)
+                else if (updated.triggerAt.isAfter(Instant.now())) {
                     if (notificationAllowed()) runCatching { schedule(updated) }
+                } else if (updated.keepUntilDone) runCatching {
+                    LocalReminderReceiver().onReceive(context,
+                        Intent(context, LocalReminderReceiver::class.java)
+                            .setAction(ACTION_NOTIFY).putExtra(EXTRA_ID, updated.id))
                 } else runCatching { store.remove(updated.id) }
             }
         }
@@ -93,14 +132,16 @@ class LocalReminderAlarms(private val context: Context) {
         val presentKeys = events.mapNotNull { event -> runCatching {
             LocalReminderPlanner.plan(event, LocalReminderWhen.MORNING_OF).eventKey
         }.getOrNull() }.toSet()
-        store.suspendMissing(completeKeys, range, presentKeys).forEach { cancel(it) }
+        store.suspendMissing(completeKeys, range, presentKeys).forEach {
+            cancel(it); cancelNotification(it)
+        }
     }
 
     fun removeConfirmedSources(sources: List<CalendarSource>) {
         val store = LocalReminderStore(context)
         sources.forEach { source ->
             val key = LocalReminderPlanner.sourceKey(source.provider, source.id)
-            store.removeSource(key).forEach { cancel(it) }
+            store.removeSource(key).forEach { cancel(it); cancelNotification(it) }
         }
     }
 
@@ -112,6 +153,8 @@ class LocalReminderAlarms(private val context: Context) {
 
     companion object {
         const val ACTION_NOTIFY = "com.tinkercobble.ham.LOCAL_REMINDER"
+        const val ACTION_DONE = "com.tinkercobble.ham.LOCAL_REMINDER_DONE"
+        const val ACTION_DISMISSED = "com.tinkercobble.ham.LOCAL_REMINDER_DISMISSED"
         const val EXTRA_ID = "reminder_id"
         const val CHANNEL = "ham-local-reminders"
     }
@@ -119,21 +162,33 @@ class LocalReminderAlarms(private val context: Context) {
 
 class LocalReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != LocalReminderAlarms.ACTION_NOTIFY) return
         val id = intent.getStringExtra(LocalReminderAlarms.EXTRA_ID) ?: return
+        if (intent.action == LocalReminderAlarms.ACTION_DONE) {
+            LocalReminderAlarms(context).done(id)
+            return
+        }
+        // Android may dismiss an ongoing card. The delivered record remains for in-app Done.
+        if (intent.action == LocalReminderAlarms.ACTION_DISMISSED) return
+        if (intent.action != LocalReminderAlarms.ACTION_NOTIFY) return
         val store = LocalReminderStore(context)
-        val record = runCatching { store.list().singleOrNull { it.id == id && it.active } }
+        val record = runCatching { store.list().singleOrNull {
+            it.id == id && it.active && !(it.keepUntilDone && it.delivered) } }
             .getOrNull() ?: return
         val now = Instant.now()
         if (record.triggerAt.isAfter(now.plusSeconds(60))) {
             runCatching { LocalReminderAlarms(context).schedule(record) }
             return
         }
-        if (now.isAfter(record.triggerAt.plusSeconds(24 * 60 * 60))) {
+        if (!record.keepUntilDone && now.isAfter(record.triggerAt.plusSeconds(24 * 60 * 60))) {
             runCatching { store.remove(id) }
             return
         }
         if (!LocalReminderAlarms(context).notificationAllowed()) return
+        if (record.keepUntilDone) {
+            val delivered = runCatching { store.markDelivered(id) }.getOrNull() ?: return
+            post(context, delivered)
+            return
+        }
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(LocalReminderAlarms.CHANNEL,
             "HAM local calendar reminders", NotificationManager.IMPORTANCE_DEFAULT))
@@ -151,6 +206,42 @@ class LocalReminderReceiver : BroadcastReceiver() {
             .build()
         manager.notify(id.hashCode(), notification)
         runCatching { store.remove(id) }
+    }
+
+    companion object {
+        fun post(context: Context, record: LocalReminderRecord) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(NotificationChannel(LocalReminderAlarms.CHANNEL,
+                "HAM local calendar reminders", NotificationManager.IMPORTANCE_DEFAULT))
+            fun actionPending(action: String) = PendingIntent.getBroadcast(context, 0,
+                Intent(context, LocalReminderReceiver::class.java).setAction(action)
+                    .setData(Uri.parse("ham-local-reminder-action:${record.id}:$action"))
+                    .putExtra(LocalReminderAlarms.EXTRA_ID, record.id),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java)
+                .setAction("com.tinkercobble.ham.OPEN_PINNED_REMINDER")
+                .setData(Uri.parse("ham-local-reminder-open:${record.id}"))
+                .putExtra(LocalReminderAlarms.EXTRA_ID, record.id)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val public = NotificationCompat.Builder(context, LocalReminderAlarms.CHANNEL)
+                .setSmallIcon(R.mipmap.ic_launcher).setContentTitle("HAM reminder")
+                .setContentText("Unlock to view your event.").build()
+            val lines = PinnedReminderText.lines(record)
+            val notification = NotificationCompat.Builder(context, LocalReminderAlarms.CHANNEL)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(record.details?.title.orEmpty())
+                .setContentText(PinnedReminderText.range(record))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(lines.joinToString("\n")))
+                .setContentIntent(open).setDeleteIntent(actionPending(LocalReminderAlarms.ACTION_DISMISSED))
+                .addAction(0, "Done", actionPending(LocalReminderAlarms.ACTION_DONE))
+                .setOngoing(true).setAutoCancel(false).setOnlyAlertOnce(true)
+                .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setPublicVersion(public)
+                .build()
+            manager.notify(record.id.hashCode(), notification)
+        }
     }
 }
 

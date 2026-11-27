@@ -97,6 +97,35 @@ object SavedGroupSelection {
     }
 }
 
+/** Merge only approved source memberships; unavailable and unapproved sources remain local. */
+object SavedGroupSyncProjection {
+    fun apply(local: SavedGroupState, order: List<String>?, names: Map<String, String>,
+        activeKnown: Boolean, activeId: String?,
+        approvedMemberships: Map<CalendarSource, List<String>?>,
+        deletedGroupIds: Set<String> = emptySet()): SavedGroupState? {
+        if (order == null || order.distinct().size != order.size ||
+            order.any { it !in names }) return null
+        val orderSet = order.toSet()
+        if (approvedMemberships.values.filterNotNull().any { ids -> ids.any { it !in orderSet } })
+            return null
+        val localById = local.groups.associateBy { it.id }
+        val revised = order.map { id ->
+            val prior = localById[id]?.members.orEmpty()
+            val controlledIds = approvedMemberships.filterValues { it != null }.keys.map { it.id }.toSet()
+            val retained = prior.filterNot { it.sourceId in controlledIds }
+            val added = approvedMemberships.mapNotNull { (source, ids) ->
+                if (ids?.contains(id) == true) runCatching { SavedGroupMember.from(source) }.getOrNull()
+                else null
+            }
+            SavedCalendarGroup(id, names.getValue(id), (retained + added).distinctBy { it.sourceId })
+        } + local.groups.filter { it.id !in orderSet && it.id !in deletedGroupIds }
+        val finalIds = revised.map { it.id }.toSet()
+        val selected = if (activeKnown) activeId?.takeIf { it in finalIds }
+            else local.activeId?.takeIf { it in finalIds }
+        return runCatching { SavedGroupState(revised, selected).validated() }.getOrNull()
+    }
+}
+
 /** Encrypted, server-scoped local group names and exact source identities. */
 class SavedCalendarGroupStore(context: Context) {
     private val prefs = context.getSharedPreferences("ham-saved-calendar-groups", Context.MODE_PRIVATE)

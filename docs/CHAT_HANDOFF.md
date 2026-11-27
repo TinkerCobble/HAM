@@ -1,5 +1,21 @@
 # Public HAM — Chat and Codex handoff
 
+## 2026-11-27 code166 local publication audit
+
+- **Source:** isolated `codex/code166-publication-audit` branch includes reviewed code166 app and synthetic tests only. No private Git history, device captures, account values or signing material were copied.
+- **Checks:** 196 JVM tests, release build/lint, source privacy and Gitleaks current/history passed. A clean unsigned release build matched the clean private code166 source build byte for byte. The same signed code166 APK installed Note8 first and Pixel 8 second, with matching installed hashes and original install times preserved; both opened the Pinned Reminders screen. The Note8 also passed a disposable real Android reminder delivery/Done check.
+- **Release:** the public GitHub connection has read-only access to `TinkerCobble/HAM`; this candidate has no public source branch, CI run or tag. The website download and feed still serve code146. Keep the feed unchanged until the audited source, signed APK and site pass their publication gates.
+
+## 2026-11-25 code164 local publication audit
+
+- **Source:** isolated local `codex/code164-publication-audit` at `2e99c39`, based on the existing code160 candidate; reviewed app files advance to code164 with page Back and read-only existing-event navigation. Private Git history and sensitive project records were not copied.
+- **Checks:** clean unsigned APK matches the clean private code164 build byte for byte; JVM tests, release lint/build, source privacy and Gitleaks current/history pass.
+- **Release state:** the exact signed APK was installed Note8 first and Pixel second, but public source push/CI is blocked by read-only GitHub access. Disposable provider write and private-service acceptance are still open. Website/feed stays code146; no public release occurred.
+
+## 2026-11-25 local code160 audit candidate
+
+An isolated public-repository worktree stages reviewed canonical 0.3.44/code160 app and synthetic test source without private Git history or data. Local 193 JVM tests, release lint/build, current-file privacy/Gitleaks and exact private/public unsigned APK SHA-256 parity passed. The current anonymous public site/feed remain code146. Physical disposable provider-write and private service startup gates, public CI, signed artifact/source archive audit and feed-last deployment are pending. Do not present this worktree as an already published release.
+
 ## Code146 public publication — 2026-11-03
 
 - **Source:** audited code146 source snapshot `5e514bc` was merged through PR 1 after all three GitHub checks passed. Separate public history contains no private development commits.

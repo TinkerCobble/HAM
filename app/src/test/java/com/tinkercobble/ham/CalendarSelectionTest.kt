@@ -13,6 +13,18 @@ class CalendarSelectionTest {
     private val b = CalendarSource("calendar.voice_appointments", "Appointments", 1, "Provider B")
     private val readOnly = CalendarSource("calendar.scouts", "Scouts", 0)
 
+    @Test fun managementSectionsNeverPromoteHiddenSources() {
+        val prefs = CalendarPreferences(favorites = setOf(a.id), defaultId = a.id,
+            recent = listOf(b.id))
+        assertEquals("My Calendars", CalendarSelection.managementSection(a, prefs, true))
+        assertEquals("Hidden Calendars", CalendarSelection.managementSection(a, prefs, false))
+        assertEquals("My Calendars", CalendarSelection.managementSection(b, prefs, true))
+        assertEquals("Home Assistant", CalendarSelection.managementSection(readOnly, prefs, true))
+        val android = CalendarSource("android:2", "Synthetic", 0,
+            provider = CalendarProviderKind.ANDROID)
+        assertEquals("Other Calendars", CalendarSelection.managementSection(android, prefs, true))
+    }
+
     @Test fun newHomeAssistantCalendarStartsHiddenWithoutChangingExistingChoices() {
         val prefs = CalendarPreferences(favorites = setOf(a.id), defaultId = a.id,
             hidden = setOf(readOnly.id))
@@ -100,6 +112,22 @@ class CalendarSelectionTest {
             listOf(CalendarSource(id, "Synthetic ICS", 0, provider = CalendarProviderKind.ICS))))
     }
 
+    @Test fun confirmedMirrorHidesOnlyDisplayedCopyAndPreservesSourceEvent() {
+        val original = AgendaEvent(a.id, a.name, "Fictional checkup", "2026-12-03",
+            "2026-12-04", true, "", "", "fixture-a", null, CalendarProviderKind.HOME_ASSISTANT)
+        val mirrored = original.copy(calendarId = b.id, calendarName = b.name, uid = "fixture-b")
+        val prefs = CalendarPreferences(mirrorHidden = setOf(b.id), order = mapOf(b.id to 2))
+        assertEquals(listOf(original), CalendarSelection.visibleEvents(listOf(original, mirrored),
+            prefs, false, false, emptySet()))
+        assertEquals(listOf(original, mirrored), CalendarSelection.visibleEvents(listOf(original, mirrored),
+            prefs, false, false, emptySet(), includeHidden = true))
+        assertEquals(2, prefs.order[b.id])
+        val restored = CalendarPreferences.fromStored(prefs.favorites, prefs.hidden,
+            prefs.defaultId, prefs.recentString(), prefs.colorString(), prefs.view.name,
+            prefs.mirrorHidden, "${b.id}\t2")
+        assertEquals(prefs, restored)
+    }
+
     @Test fun reusedAndroidRowIdCannotInheritSelectionOrWriteDefault() {
         val old = CalendarSource("android:1", "Old", 7, "Android · old account",
             provider = CalendarProviderKind.ANDROID, identityFingerprint = "a".repeat(64))
@@ -117,6 +145,28 @@ class CalendarSelectionTest {
         assertEquals(listOf(a.id), result.preferences.recent)
         assertEquals(mapOf(a.id to "#654321"), result.preferences.colors)
         assertEquals(mapOf(replacement.id to replacement.identityFingerprint), result.fingerprints)
+    }
+
+    @Test fun temporarilyMissingBoundAndroidCalendarKeepsChoicesButCannotWrite() {
+        val source = CalendarSource("android:7", "Synthetic", 7, "Android · synthetic account",
+            provider = CalendarProviderKind.ANDROID, identityFingerprint = "d".repeat(64))
+        val prefs = CalendarPreferences(favorites = setOf(source.id), defaultId = source.id,
+            colors = mapOf(source.id to "#123456"))
+        val missing = CalendarSelection.reconcileAndroidChoices(prefs, setOf(source.id),
+            emptyList(), listOf(source), mapOf(source.id to source.identityFingerprint!!))
+        assertEquals(prefs, missing.preferences)
+        assertEquals(setOf(source.id), missing.visibleIds)
+        assertEquals(source.identityFingerprint, missing.fingerprints[source.id])
+        assertNull(CalendarSelection.resolveWritable(source.id, emptyList()))
+        val returned = CalendarSelection.reconcileAndroidChoices(missing.preferences,
+            missing.visibleIds, listOf(source), emptyList(), missing.fingerprints)
+        assertEquals(source.id, returned.preferences.defaultId)
+        assertEquals(setOf(source.id), returned.visibleIds)
+        val reused = CalendarSelection.reconcileAndroidChoices(missing.preferences,
+            missing.visibleIds, listOf(source.copy(identityFingerprint = "e".repeat(64))),
+            emptyList(), missing.fingerprints)
+        assertNull(reused.preferences.defaultId)
+        assertTrue(reused.visibleIds.isEmpty())
     }
 
     @Test fun legacyCacheCanBindMatchingAndroidCalendarButMissingCacheFailsClosed() {
