@@ -1,4 +1,8 @@
-# Public HAM status — 2026-11-25
+# Public HAM status — 2026-11-27
+
+## Local code166 source audit — publication pending
+
+This isolated public-source branch adds opt-in Keep until Done to the existing local reminder scheduler. Ordinary reminders remain generic. The opt-in snapshot is encrypted in the app's Android Keystore-backed local store, while the lock-screen preview remains generic. Synthetic unit and Android instrumentation tests cover long event text, all-day and recurring occurrences, notification actions, permission denial, and reboot rescheduling. The same signed code166 APK passed in-place Note8 and Pixel 8 installation with matching hashes and preserved first-install times; both opened HAM and the Pinned Reminders screen. The Note8 used one disposable synthetic Android event to verify a real alert and Done cleanup. The public source, website download and update feed remain at code146 until source publication, CI, and remaining release gates pass.
 
 ## Local code164 source audit — not published
 

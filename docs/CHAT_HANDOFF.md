@@ -1,5 +1,11 @@
 # Public HAM — Chat and Codex handoff
 
+## 2026-11-27 code166 local publication audit
+
+- **Source:** isolated `codex/code166-publication-audit` branch includes reviewed code166 app and synthetic tests only. No private Git history, device captures, account values or signing material were copied.
+- **Checks:** 196 JVM tests, release build/lint, source privacy and Gitleaks current/history passed. A clean unsigned release build matched the clean private code166 source build byte for byte. The same signed code166 APK installed Note8 first and Pixel 8 second, with matching installed hashes and original install times preserved; both opened the Pinned Reminders screen. The Note8 also passed a disposable real Android reminder delivery/Done check.
+- **Release:** the public GitHub connection has read-only access to `TinkerCobble/HAM`; this candidate has no public source branch, CI run or tag. The website download and feed still serve code146. Keep the feed unchanged until the audited source, signed APK and site pass their publication gates.
+
 ## 2026-11-25 code164 local publication audit
 
 - **Source:** isolated local `codex/code164-publication-audit` at `2e99c39`, based on the existing code160 candidate; reviewed app files advance to code164 with page Back and read-only existing-event navigation. Private Git history and sensitive project records were not copied.

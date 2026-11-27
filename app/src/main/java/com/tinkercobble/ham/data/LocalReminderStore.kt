@@ -16,6 +16,18 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+/** Stored only for an opted-in pinned reminder, inside the existing encrypted store. */
+data class PinnedReminderDetails(
+    val title: String, val end: String, val location: String,
+    val calendarId: String, val provider: CalendarProviderKind,
+    val uid: String?, val recurrenceId: String?,
+) {
+    companion object {
+        fun from(event: AgendaEvent) = PinnedReminderDetails(event.summary, event.end,
+            event.location, event.calendarId, event.provider, event.uid, event.recurrenceId)
+    }
+}
+
 data class LocalReminderRecord(
     val id: String,
     val eventKey: String,
@@ -28,6 +40,9 @@ data class LocalReminderRecord(
     val whenToNotify: LocalReminderWhen,
     val minutesBefore: Int,
     val triggerAt: Instant,
+    val keepUntilDone: Boolean = false,
+    val delivered: Boolean = false,
+    val details: PinnedReminderDetails? = null,
 ) {
     val key: String get() = "$eventKey|${whenToNotify.name}|$minutesBefore"
 
@@ -41,18 +56,21 @@ data class LocalReminderRecord(
         require(eventDate.year in 1900..2200)
         require(eventStart.length in 10..64)
         LocalReminderPlanner.trigger(eventStart, allDay, whenToNotify, minutesBefore)
+        require(!keepUntilDone || details != null)
         return this
     }
 
     companion object {
-        fun from(plan: LocalReminderPlan) = LocalReminderRecord(UUID.randomUUID().toString(),
+        fun from(plan: LocalReminderPlan, event: AgendaEvent? = null, keepUntilDone: Boolean = false) =
+            LocalReminderRecord(UUID.randomUUID().toString(),
             plan.eventKey, plan.sourceKey, plan.duplicateKey, plan.eventDate,
             plan.eventStart, plan.allDay, true, plan.whenToNotify,
-            plan.minutesBefore, plan.triggerAt)
+            plan.minutesBefore, plan.triggerAt, keepUntilDone, false,
+            if (keepUntilDone) PinnedReminderDetails.from(requireNotNull(event)) else null)
     }
 }
 
-/** Encrypted device-local reminder preferences; no event titles, URLs or credentials are retained. */
+/** Encrypted device-local reminders; event text is retained only for opted-in pins. */
 class LocalReminderStore(context: Context) {
     private val prefs = context.getSharedPreferences("ham-local-reminders", Context.MODE_PRIVATE)
     private val alias = "ham-local-reminders-v1"
@@ -86,7 +104,15 @@ class LocalReminderStore(context: Context) {
                 item.getString("duplicate_key"), LocalDate.parse(item.getString("event_date")),
                 item.getString("event_start"), item.getBoolean("all_day"),
                 item.getBoolean("active"), LocalReminderWhen.valueOf(item.getString("when")),
-                item.getInt("minutes"), Instant.ofEpochMilli(item.getLong("trigger"))).validated()
+                item.getInt("minutes"), Instant.ofEpochMilli(item.getLong("trigger")),
+                item.optBoolean("keep_until_done", false), item.optBoolean("delivered", false),
+                item.optJSONObject("details")?.let { details ->
+                    PinnedReminderDetails(details.getString("title"), details.getString("end"),
+                        details.getString("location"), details.getString("calendar_id"),
+                        CalendarProviderKind.valueOf(details.getString("provider")),
+                        details.optString("uid").ifBlank { null },
+                        details.optString("recurrence_id").ifBlank { null })
+                }).validated()
         }.also { records ->
             require(records.map { it.id }.distinct().size == records.size &&
                 records.map { it.key }.distinct().size == records.size) {
@@ -105,7 +131,13 @@ class LocalReminderStore(context: Context) {
                 .put("duplicate_key", item.duplicateKey).put("event_date", item.eventDate.toString())
                 .put("event_start", item.eventStart).put("all_day", item.allDay)
                 .put("active", item.active).put("when", item.whenToNotify.name)
-                .put("minutes", item.minutesBefore).put("trigger", item.triggerAt.toEpochMilli()))
+                .put("minutes", item.minutesBefore).put("trigger", item.triggerAt.toEpochMilli())
+                .put("keep_until_done", item.keepUntilDone).put("delivered", item.delivered)
+                .also { json -> item.details?.let { details -> json.put("details", JSONObject()
+                    .put("title", details.title).put("end", details.end)
+                    .put("location", details.location).put("calendar_id", details.calendarId)
+                    .put("provider", details.provider.name).put("uid", details.uid ?: "")
+                    .put("recurrence_id", details.recurrenceId ?: "")) } })
         }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
@@ -116,7 +148,8 @@ class LocalReminderStore(context: Context) {
     }
 
     /** Add only when no equivalent reminder already exists, including another connection to the same UID. */
-    fun add(plan: LocalReminderPlan): LocalReminderRecord = synchronized(lock) {
+    fun add(plan: LocalReminderPlan, event: AgendaEvent? = null,
+        keepUntilDone: Boolean = false): LocalReminderRecord = synchronized(lock) {
         val records = read()
         check(records.none { it.key == plan.key }) { "This local reminder already exists" }
         check(records.none { it.duplicateKey == plan.duplicateKey &&
@@ -124,7 +157,15 @@ class LocalReminderStore(context: Context) {
             "An equivalent local reminder exists on another calendar connection"
         }
         check(records.size < 100) { "Local reminder limit reached" }
-        LocalReminderRecord.from(plan).also { write(records + it) }
+        LocalReminderRecord.from(plan, event, keepUntilDone).also { write(records + it) }
+    }
+
+    /** A delivered pin survives opening or dismissing its notification until Done. */
+    fun markDelivered(id: String): LocalReminderRecord = synchronized(lock) {
+        val records = read()
+        val record = records.singleOrNull { it.id == id && it.keepUntilDone } ?: error("Reminder changed")
+        if (!record.delivered) write(records.map { if (it.id == id) it.copy(delivered = true) else it })
+        record.copy(delivered = true)
     }
 
     fun remove(id: String): LocalReminderRecord = synchronized(lock) {
@@ -150,7 +191,8 @@ class LocalReminderStore(context: Context) {
                 val plan = LocalReminderPlanner.plan(event, old.whenToNotify, old.minutesBefore)
                 val next = old.copy(duplicateKey = plan.duplicateKey, eventDate = plan.eventDate,
                     eventStart = plan.eventStart, allDay = plan.allDay,
-                    active = true, triggerAt = plan.triggerAt)
+                    active = true, triggerAt = plan.triggerAt,
+                    details = if (old.keepUntilDone) PinnedReminderDetails.from(event) else null)
                 if (next == old) null else old to next
             }
             if (changed.isNotEmpty()) {

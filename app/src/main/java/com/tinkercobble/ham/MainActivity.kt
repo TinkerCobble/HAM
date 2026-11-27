@@ -152,6 +152,7 @@ import com.tinkercobble.ham.data.LocalReminderPlanner
 import com.tinkercobble.ham.data.LocalReminderRecord
 import com.tinkercobble.ham.data.LocalReminderStore
 import com.tinkercobble.ham.data.LocalReminderWhen
+import com.tinkercobble.ham.data.PinnedReminderText
 import com.tinkercobble.ham.ui.HamViewModel
 import com.tinkercobble.ham.ui.HamTheme
 import com.tinkercobble.ham.ui.LocalBackupPage
@@ -177,6 +178,11 @@ import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     private var sharedScreenshot by mutableStateOf<Uri?>(null)
+    private var openPinnedId by mutableStateOf<String?>(null)
+    private fun acceptReminder(incoming: Intent?) {
+        if (incoming?.action == "com.tinkercobble.ham.OPEN_PINNED_REMINDER")
+            openPinnedId = incoming.getStringExtra(LocalReminderAlarms.EXTRA_ID)
+    }
     private fun acceptShare(incoming: Intent?) {
         if (incoming?.action == Intent.ACTION_SEND && incoming.type?.startsWith("image/") == true)
             sharedScreenshot = (if (android.os.Build.VERSION.SDK_INT >= 33)
@@ -191,6 +197,7 @@ class MainActivity : ComponentActivity() {
             runCatching { LocalReminderAlarms(this@MainActivity).reschedule() }
         }
         acceptShare(intent)
+        acceptReminder(intent)
         setContent {
             val model: HamViewModel = viewModel()
             if (BuildConfig.DEBUG && intent.getBooleanExtra("ham_demo_fixture", false)) {
@@ -200,7 +207,8 @@ class MainActivity : ComponentActivity() {
                     true
                 }
             }
-            HamTheme { HamApp(model, sharedScreenshot) { sharedScreenshot = null } }
+            HamTheme { HamApp(model, sharedScreenshot, { sharedScreenshot = null },
+                openPinnedId, { openPinnedId = null }) }
         }
     }
     override fun onStart() {
@@ -219,6 +227,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         acceptShare(intent)
+        acceptReminder(intent)
     }
 }
 
@@ -229,7 +238,8 @@ private data class EventCopyRequest(val id: java.util.UUID, val draft: IcsImport
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, clearShare: () -> Unit) {
+private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?,
+    clearShare: () -> Unit, openPinnedId: String?, clearPinned: () -> Unit) {
     val context = LocalContext.current
     val activity = context as ComponentActivity
     val scope = rememberCoroutineScope()
@@ -267,6 +277,14 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
     var setupRequested by remember { mutableStateOf(false) }
     val calendarScroll = rememberLazyListState()
     var focusExistingEvent by remember { mutableStateOf<AgendaEvent?>(null) }
+    var selectedPinnedId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(openPinnedId) {
+        if (openPinnedId != null) {
+            selectedPinnedId = openPinnedId
+            showPage("Pinned Reminders")
+            clearPinned()
+        }
+    }
     fun navigate(destination: String) {
         when (destination) {
             "Today" -> model.enterToday()
@@ -515,6 +533,9 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
                                 "Calendars" -> ManageCalendarsPage(model, { goBack() }, ::openSetup, manageId)
                                 "About" -> AboutPage()
                                 "More" -> MorePage { showPage(it) }
+                                "Pinned Reminders" -> PinnedRemindersPage(selectedPinnedId) {
+                                    selectedPinnedId = null
+                                }
                                 else -> SettingsPage(model, onConnected = { navigate("Today") },
                                     openSetup = setupRequested, onSetupConsumed = { setupRequested = false }, onUpdateAvailable = {
                                     availableUpdate = it
@@ -528,7 +549,7 @@ private fun HamApp(model: HamViewModel = viewModel(), sharedScreenshot: Uri?, cl
                             horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             destinations.forEach { destination ->
                                 NavigationChoice(destination, page == destination ||
-                                    (destination == "More" && page in listOf("Find Time", "Tasks", "Search", "Settings", "About", "Calendars")),
+                                    (destination == "More" && page in listOf("Pinned Reminders", "Find Time", "Tasks", "Search", "Settings", "About", "Calendars")),
                                     { navigate(destination) }, Modifier.weight(1f))
                             }
                         }
@@ -591,7 +612,7 @@ private fun NavigationChoice(label: String, selected: Boolean, onClick: () -> Un
 private fun MorePage(open: (String) -> Unit) {
     Text("More", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
     Spacer(Modifier.height(12.dp))
-    listOf("Find Time" to "See open time with a travel buffer", "Tasks" to "Local tasks and Home Assistant items", "Search" to "Find an event",
+    listOf("Pinned Reminders" to "Reminders kept until you mark them Done", "Find Time" to "See open time with a travel buffer", "Tasks" to "Local tasks and Home Assistant items", "Search" to "Find an event",
         "Settings" to "Connection, calendars, and updates", "About" to "Version and app information")
         .forEach { (name, detail) ->
             Card(onClick = { open(name) }, modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
@@ -601,6 +622,72 @@ private fun MorePage(open: (String) -> Unit) {
                 }
             }
         }
+}
+
+@Composable
+private fun PinnedRemindersPage(initiallySelectedId: String?, onSelectedConsumed: () -> Unit) {
+    val context = LocalContext.current
+    val store = remember(context) { LocalReminderStore(context) }
+    val alarms = remember(context) { LocalReminderAlarms(context) }
+    val scope = rememberCoroutineScope()
+    var rows by remember { mutableStateOf<List<LocalReminderRecord>>(emptyList()) }
+    var selectedId by remember { mutableStateOf(initiallySelectedId) }
+    var error by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(initiallySelectedId) {
+        if (initiallySelectedId != null) selectedId = initiallySelectedId
+        try { rows = withContext(Dispatchers.IO) { store.list().filter { it.keepUntilDone } } }
+        catch (_: Exception) { error = "Could not open protected reminders on this device." }
+        finally { loading = false }
+        onSelectedConsumed()
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Pinned Reminders", style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold)
+        Text("These reminders stay here until you mark them Done. Opening or dismissing a notification does not remove the pin.",
+            style = MaterialTheme.typography.bodySmall)
+        if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+        if (loading) Text("Loading pinned reminders…")
+        else if (rows.isEmpty() && error.isBlank()) Text("No pinned reminders.")
+        val selected = rows.firstOrNull { it.id == selectedId }
+        if (selectedId != null && selected == null) Text("This reminder is no longer available.")
+        if (selected != null) {
+            Text("Event details", style = MaterialTheme.typography.titleLarge)
+            selected.details?.title?.takeIf { it.isNotBlank() }?.let {
+                Text(it, Modifier.fillMaxWidth(), style = MaterialTheme.typography.titleMedium)
+            }
+            Text(PinnedReminderText.range(selected), Modifier.fillMaxWidth())
+            selected.details?.location?.takeIf { it.isNotBlank() }?.let {
+                Text(it, Modifier.fillMaxWidth())
+            }
+            if (!selected.active) Text("The calendar did not include this event in its last complete read. Its reminder is paused until the source can confirm it again.",
+                style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { selectedId = null }) { Text("Back to pinned reminders") }
+        } else rows.sortedBy { it.triggerAt }.forEach { record ->
+            Card(onClick = { selectedId = record.id }, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(record.details?.title.orEmpty(), Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.titleMedium)
+                    Text(PinnedReminderText.range(record), Modifier.fillMaxWidth())
+                    Text(if (record.delivered) "Waiting for Done" else "Scheduled",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        if (selected != null) Button(onClick = {
+            busy = true; error = ""
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) { alarms.done(selected.id) }
+                    rows = withContext(Dispatchers.IO) { store.list().filter { it.keepUntilDone } }
+                    selectedId = null
+                } catch (_: Exception) { error = "Could not mark this reminder Done." }
+                finally { busy = false }
+            }
+        }, enabled = !busy) { Text("Done") }
+    }
 }
 
 @Composable
@@ -1295,7 +1382,7 @@ private fun EventDetails(event: AgendaEvent, source: CalendarSource?, model: Ham
                 editable && source?.canCreate == true) {
                 TextButton(onClick = { remindersOpen = true }) { Text("Android calendar reminders") }
             }
-            if (source != null && (source.provider == CalendarProviderKind.ICS || !source.canUpdate)) {
+            if (source != null) {
                 TextButton(onClick = { localRemindersOpen = true }) { Text("HAM local reminders") }
             }
             TextButton(onClick = {
@@ -1465,6 +1552,7 @@ private fun LocalReminderDialog(event: AgendaEvent, close: () -> Unit) {
     }
     var rows by remember(eventKey) { mutableStateOf<List<LocalReminderRecord>>(emptyList()) }
     var choice by remember(eventKey) { mutableStateOf(LocalReminderWhen.MORNING_OF) }
+    var keepUntilDone by remember(eventKey) { mutableStateOf(false) }
     var minutesText by remember(eventKey) { mutableStateOf("60") }
     var busy by remember(eventKey) { mutableStateOf(true) }
     var error by remember(eventKey) { mutableStateOf("") }
@@ -1509,14 +1597,14 @@ private fun LocalReminderDialog(event: AgendaEvent, close: () -> Unit) {
                         LocalReminderWhen.MORNING_OF -> "Morning of event"
                         LocalReminderWhen.MINUTES_BEFORE -> "${record.minutesBefore} minutes before"
                     }
-                    Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Text(label + if (record.keepUntilDone) " · Keep until Done" else "",
+                        Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     TextButton(onClick = {
                         busy = true; error = ""; precision = ""
                         scope.launch {
                             try {
                                 rows = withContext(Dispatchers.IO) {
-                                    val removed = store.remove(record.id)
-                                    alarms.cancel(removed)
+                                    alarms.done(record.id)
                                     store.list().filter { it.eventKey == eventKey }
                                 }
                             } catch (e: CancellationException) { throw e }
@@ -1546,6 +1634,12 @@ private fun LocalReminderDialog(event: AgendaEvent, close: () -> Unit) {
                     OutlinedTextField(minutesText, { minutesText = it.take(5) },
                         label = { Text("Minutes (0–10080)") }, singleLine = true)
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = keepUntilDone, onCheckedChange = { keepUntilDone = it })
+                Text("Keep until Done")
+            }
+            if (keepUntilDone) Text("Alerts once, then stays in Pinned Reminders until Done. Opening or dismissing the notification will not clear the pin. Full event details appear after unlocking; the lock screen stays generic.",
+                style = MaterialTheme.typography.bodySmall)
             Button(onClick = {
                 if (!alarms.notificationAllowed()) {
                     if (android.os.Build.VERSION.SDK_INT >= 33)
@@ -1561,7 +1655,7 @@ private fun LocalReminderDialog(event: AgendaEvent, close: () -> Unit) {
                     try {
                         val exact = withContext(Dispatchers.IO) {
                             val plan = LocalReminderPlanner.plan(event, choice, minutes)
-                            val saved = store.add(plan)
+                            val saved = store.add(plan, event, keepUntilDone)
                             try { alarms.schedule(saved) }
                             catch (failure: Exception) {
                                 store.remove(saved.id)

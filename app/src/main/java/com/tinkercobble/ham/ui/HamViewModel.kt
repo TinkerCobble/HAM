@@ -2434,7 +2434,11 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         loading.value = true
         try {
             withContext(Dispatchers.IO) { androidProvider.deleteEvent(source, event) }
-            message.value = "Event removed"
+            val remindersCleared = withContext(Dispatchers.IO) { runCatching {
+                com.tinkercobble.ham.LocalReminderAlarms(getApplication())
+                    .removeConfirmedEvent(event) }.isSuccess }
+            message.value = if (remindersCleared) "Event removed"
+                else "Event removed; check Pinned Reminders for a remaining local alert"
             done()
             refresh()
         } catch (e: Exception) { message.value = e.message ?: "Event was not removed" }
@@ -2456,7 +2460,11 @@ class HamViewModel(application: Application) : AndroidViewModel(application) {
         loading.value = true
         try {
             withContext(Dispatchers.IO) { androidProvider.deleteSeries(source, event) }
-            message.value = "Entire series removed"
+            val remindersCleared = withContext(Dispatchers.IO) { runCatching {
+                com.tinkercobble.ham.LocalReminderAlarms(getApplication())
+                    .removeConfirmedEvent(event, wholeSeries = true) }.isSuccess }
+            message.value = if (remindersCleared) "Entire series removed"
+                else "Series removed; check Pinned Reminders for a remaining local alert"
             done()
             refresh()
         } catch (e: Exception) { message.value = e.message ?: "Series was not removed" }
